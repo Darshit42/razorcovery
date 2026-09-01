@@ -10,8 +10,9 @@ See `PRD.md` for scope, `CLAUDE.md` for working rules.
 - [x] Decision layer: one logged function per failure type + stopping rules
 - [x] Tests: stopping rules provably block calls
 - [x] LiveKit Hinglish voice agent — first pass (Gemini Live)
+- [x] Metrics view — FastAPI + one HTML page, computed from the audit trail
 - [ ] Telephony provider + one live call end-to-end
-- [ ] Metrics from the audit trail
+- [ ] Day-3 live pilot: real calls replace simulated batch outcomes
 
 ## Setup
 
@@ -42,6 +43,13 @@ Voice agent (joins a LiveKit room; needs LIVEKIT_* + GOOGLE_API_KEY):
 python -m voice.agent dev                            # local worker
 ```
 
+Metrics view (needs GOOGLE_API_KEY for `--real`; DATABASE_URL always):
+
+```bash
+python -m metrics.seed --reset --real 4              # populate outcomes
+uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
+```
+
 ## Layout
 
 ```
@@ -49,6 +57,7 @@ data/       synthetic event generator + pydantic schemas + fixtures
 decision/   failure-type -> intervention routing, stopping rules, batch runner
 audit/      append-only Postgres audit log (schema, writer, reader, export)
 voice/      LiveKit Gemini-Live agent: prompt, flow (logged tools), dispatch
+metrics/    FastAPI read-only metrics view over audit_log + one HTML page
 tests/
 ```
 
@@ -87,3 +96,22 @@ honouring a hard "don't contact me again" immediately.
 Telephony is not wired: `voice/dispatch.py` exposes a `Dialer` interface and a
 default `UnconfiguredDialer` that refuses to place a call until a provider
 (Exotel/Twilio/Plivo -> LiveKit SIP participant) is chosen (PRD §10).
+
+## Metrics view
+
+`metrics/` — FastAPI, read-only, no auth, no framework, everything computed from
+`audit_log` at request time (`metrics/compute.py`).
+
+- `GET /` — recovery rate + ₹ recovered by intervention and by failure type;
+  cost/effort per recovery (attempts, call minutes, ₹ at documented rates in
+  `metrics/cost.py`); stopping-rule counts; the full exceptions list (every
+  non-recovered event + why, nothing hidden); an all-events table.
+- `GET /event/{id}` — drill-down for the pitch demo: event facts -> decision +
+  reason -> stopping rules -> action -> outcome -> the call transcript as
+  readable dialogue, tagged **real** (genuine Gemini) or **simulated**.
+- `GET /api/summary`, `/api/exceptions`, `/api/event/{id}` — same data as JSON.
+
+Batch call outcomes are seeded by `metrics/seed.py` (documented probability
+model) because real outcomes come from the Day-3 pilot; `--real N` runs the
+actual Gemini agent for N calls so several drill-downs show real transcripts.
+The page carries a banner making the simulated/real split explicit.
