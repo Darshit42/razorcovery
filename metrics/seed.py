@@ -209,19 +209,51 @@ def run_real_calls(conn, events, routed, n: int) -> set[str]:
     return asyncio.run(runner())
 
 
+def _voice_events_not_yet_real(conn) -> list[str]:
+    """Voice-routed events whose most recent outcome is not a real call.
+    Append-only: a later real outcome supersedes an earlier simulated one
+    in the reconstructed view."""
+    voice = {
+        r[0]
+        for r in conn.execute(
+            "SELECT event_id FROM audit_log WHERE entry_type='decision' AND intervention='voice'"
+        ).fetchall()
+    }
+    real = {
+        r[0]
+        for r in conn.execute(
+            "SELECT event_id FROM audit_log WHERE entry_type='outcome' "
+            "AND payload->>'transcript_source' = 'real'"
+        ).fetchall()
+    }
+    return sorted(voice - real)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--reset", action="store_true", help="TRUNCATE audit_log first")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--real", type=int, default=0, help="run N real Gemini calls")
+    ap.add_argument("--append-real", type=int, default=0, dest="append_real",
+                    help="add N real Gemini calls for voice events that have no "
+                    "outcome yet (no reset, no re-simulation)")
     ap.add_argument("--now", default="2026-09-02T12:00:00+05:30")
     args = ap.parse_args()
 
     now = datetime.fromisoformat(args.now)
     events = load_events()
+    by_id = {e.event_id: e for e in events}
 
     db.init_db()
     with db.get_conn() as conn:
+        if args.append_real:
+            pending = _voice_events_not_yet_real(conn)
+            targets = [by_id[i] for i in pending if i in by_id][: args.append_real]
+            routed = {e.event_id: route(e, now=now) for e in targets}
+            done = run_real_calls(conn, targets, routed, len(targets))
+            print(f"appended {len(done)} real calls: {sorted(done)}")
+            return
+
         if args.reset:
             reset(conn)
         routed = run_decisions(conn, events, now)

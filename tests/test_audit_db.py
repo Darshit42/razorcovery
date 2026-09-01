@@ -18,9 +18,17 @@ pytestmark = pytest.mark.skipif(not db.ping(), reason="Postgres not reachable")
 
 @pytest.fixture()
 def conn():
+    """A connection that is always rolled back, so these tests never
+    leave rows behind in a shared / demo database."""
+    import psycopg
+
     db.init_db()
-    with db.get_conn() as c:
+    c = psycopg.connect(db.database_url())
+    try:
         yield c
+    finally:
+        c.rollback()
+        c.close()
 
 
 @pytest.fixture()

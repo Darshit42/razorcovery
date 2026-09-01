@@ -1,6 +1,11 @@
-"""Server-rendered HTML for the metrics view. Plain f-strings, one
-inline stylesheet, no JS, no framework. Legible tables + a readable
-transcript view for the pitch demo.
+"""Server-rendered HTML for the metrics view.
+
+Styling via the Tailwind CDN (no build step, no React / component
+library). Layout follows the agreed reference: fixed left sidebar, warm
+off-white canvas, stat-card row with circular icon badges, white bordered
+content panels, empty-state pattern for sections with no data.
+
+The data all comes from metrics.compute — this module only renders it.
 """
 from __future__ import annotations
 
@@ -10,43 +15,64 @@ from typing import Any
 from metrics import cost
 from metrics.compute import EventLifecycle, Summary
 
-_CSS = """
-* { box-sizing: border-box; }
-body { font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
-       color: #1a1a1a; background: #fafafa; margin: 0; padding: 2rem 1rem; }
-main { max-width: 980px; margin: 0 auto; }
-h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; border-bottom: 2px solid #e2e2e2;
-     padding-bottom: .25rem; }
-.sub { color: #666; margin: 0 0 1.5rem; }
-.banner { background: #fff6e0; border: 1px solid #e8cf8a; border-radius: 6px;
-          padding: .6rem .9rem; margin: 1rem 0; font-size: .9rem; }
-.cards { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
-.card { flex: 1 1 160px; background: #fff; border: 1px solid #e2e2e2;
-        border-radius: 8px; padding: .8rem 1rem; }
-.card .n { font-size: 1.5rem; font-weight: 600; }
-.card .l { color: #666; font-size: .82rem; text-transform: uppercase;
-           letter-spacing: .03em; }
-table { border-collapse: collapse; width: 100%; background: #fff;
-        border: 1px solid #e2e2e2; font-size: .92rem; }
-th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid #ededed; }
-th { background: #f3f3f3; font-weight: 600; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-tr:last-child td { border-bottom: none; }
-a { color: #1256a0; }
-.badge { display: inline-block; padding: .05rem .45rem; border-radius: 10px;
-         font-size: .8rem; border: 1px solid; }
-.b-recovered { background: #e6f4ea; border-color: #a8d5b5; color: #1e6b34; }
-.b-blocked   { background: #fde8e8; border-color: #f0b4b4; color: #a12a2a; }
-.b-open      { background: #eef1f5; border-color: #c7cfda; color: #45506a; }
-.turn { display: grid; grid-template-columns: 90px 1fr; gap: .8rem;
-        padding: .5rem .2rem; border-bottom: 1px solid #f0f0f0; }
-.turn .role { font-weight: 600; color: #555; text-transform: capitalize; }
-.turn.agent { background: #f6f9ff; }
-.timeline li { margin: .3rem 0; }
-.back { display: inline-block; margin-bottom: 1rem; }
-code { background: #f0f0f0; padding: .05rem .3rem; border-radius: 3px; }
+# One accent colour, distinct from the reference's amber: teal.
+_TAILWIND_CONFIG = """
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        brand: {
+          50:'#f0fdfa',100:'#ccfbf1',200:'#99f6e4',400:'#2dd4bf',
+          500:'#14b8a6',600:'#0d9488',700:'#0f766e',800:'#115e59'
+        },
+        canvas: '#faf8f4'
+      },
+      fontFamily: { sans: ['Inter','ui-sans-serif','system-ui','sans-serif'] }
+    }
+  }
+}
 """
+
+_NAV = [
+    ("overview", "Overview", "grid"),
+    ("intervention", "By intervention", "bars"),
+    ("failure-type", "By failure type", "layers"),
+    ("effort", "Cost & effort", "rupee"),
+    ("stopping-rules", "Stopping rules", "shield"),
+    ("exceptions", "Exceptions", "alert"),
+    ("all-events", "All events", "list"),
+]
+
+_ICONS = {
+    "grid": "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
+    "bars": "M4 20V10M10 20V4M16 20v-8M22 20H2",
+    "layers": "M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5",
+    "rupee": "M6 3h12M6 8h12M9 3c4 0 6 2 6 5s-2 5-6 5H8l6 8",
+    "shield": "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+    "alert": "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
+    "list": "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+    "check": "M20 6 9 17l-5-5",
+    "phone": "M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.5 2.1L9.1 11a16 16 0 0 0 6 6l1.6-1.6a2 2 0 0 1 2.1-.5c.8.3 1.7.5 2.6.6A2 2 0 0 1 22 16.9z",
+    "back": "M19 12H5M12 19l-7-7 7-7",
+    "clock": "M12 6v6l4 2M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20z",
+    "spark": "M13 2 3 14h9l-1 8 10-12h-9z",
+}
+
+_TINTS = {
+    "teal": ("bg-brand-50", "text-brand-600"),
+    "emerald": ("bg-emerald-50", "text-emerald-600"),
+    "violet": ("bg-violet-50", "text-violet-600"),
+    "rose": ("bg-rose-50", "text-rose-600"),
+    "amber": ("bg-amber-50", "text-amber-600"),
+    "slate": ("bg-slate-100", "text-slate-500"),
+}
+
+
+# --------------------------------------------------------------------------
+# small helpers
+# --------------------------------------------------------------------------
+def _e(s: Any) -> str:
+    return html.escape(str(s if s is not None else ""))
 
 
 def _rupees(n: float | int | None) -> str:
@@ -69,188 +95,387 @@ def _pct(x: float) -> str:
     return f"{x * 100:.1f}%"
 
 
-def _e(s: Any) -> str:
-    return html.escape(str(s if s is not None else ""))
-
-
-def _page(title: str, body: str) -> str:
+def _icon(name: str, cls: str = "w-5 h-5") -> str:
+    d = _ICONS.get(name, _ICONS["grid"])
     return (
-        f"<!doctype html><html><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>{_e(title)}</title><style>{_CSS}</style></head>"
-        f"<body><main>{body}</main></body></html>"
+        f"<svg class='{cls}' viewBox='0 0 24 24' fill='none' stroke='currentColor' "
+        f"stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>"
+        f"<path d='{d}'/></svg>"
     )
 
 
-def _bucket_table(buckets, label: str) -> str:
-    rows = "".join(
-        f"<tr><td>{_e(b.key)}</td>"
-        f"<td class='num'>{b.events}</td>"
-        f"<td class='num'>{b.contacted}</td>"
-        f"<td class='num'>{b.recovered}</td>"
-        f"<td class='num'>{_pct(b.recovery_rate)}</td>"
-        f"<td class='num'>{_rupees(b.amount_at_risk_inr)}</td>"
-        f"<td class='num'>{_rupees(b.amount_recovered_inr)}</td>"
-        f"<td class='num'>{_pct(b.value_recovery_rate)}</td></tr>"
-        for b in buckets
-    )
+def _badge(text: str, tone: str) -> str:
+    tones = {
+        "recovered": "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+        "blocked": "bg-rose-50 text-rose-700 ring-rose-600/20",
+        "open": "bg-slate-100 text-slate-600 ring-slate-500/20",
+        "real": "bg-brand-50 text-brand-700 ring-brand-600/20",
+        "simulated": "bg-amber-50 text-amber-700 ring-amber-600/20",
+    }
+    c = tones.get(tone, tones["open"])
     return (
-        f"<table><thead><tr><th>{_e(label)}</th>"
-        f"<th class='num'>events</th><th class='num'>contacted</th>"
-        f"<th class='num'>recovered</th><th class='num'>rate</th>"
-        f"<th class='num'>₹ at risk</th><th class='num'>₹ recovered</th>"
-        f"<th class='num'>₹ rate</th></tr></thead><tbody>{rows}</tbody></table>"
-    )
-
-
-def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecycle],
-               *, has_simulated: bool) -> str:
-    cards = "".join(
-        f"<div class='card'><div class='n'>{n}</div><div class='l'>{_e(l)}</div></div>"
-        for n, l in [
-            (f"{s.total_events}", "events"),
-            (f"{s.recovered}", "recovered"),
-            (_pct(s.recovery_rate), "recovery rate"),
-            (_rupees(s.amount_recovered_inr), "₹ recovered"),
-            (_rupees(s.amount_at_risk_inr), "₹ at risk"),
-            (_rupees(s.effort.cost_per_recovery_inr), "cost / recovery"),
-        ]
-    )
-
-    eff = s.effort
-    effort_tbl = (
-        "<table><tbody>"
-        f"<tr><th>recovered payments</th><td class='num'>{eff.recovered}</td></tr>"
-        f"<tr><th>call attempts (total)</th><td class='num'>{eff.total_attempts}</td></tr>"
-        f"<tr><th>attempts / recovery</th><td class='num'>{eff.attempts_per_recovery}</td></tr>"
-        f"<tr><th>call minutes (total)</th><td class='num'>{eff.total_call_minutes}</td></tr>"
-        f"<tr><th>call minutes / recovery</th><td class='num'>{eff.call_minutes_per_recovery}</td></tr>"
-        f"<tr><th>SMS sent · links only</th><td class='num'>{eff.sms_sent} · {eff.links_only}</td></tr>"
-        f"<tr><th>total spend</th><td class='num'>₹{eff.total_cost_inr:.2f}</td></tr>"
-        f"<tr><th>cost / recovery</th><td class='num'>₹{eff.cost_per_recovery_inr:.2f}</td></tr>"
-        "</tbody></table>"
-        f"<p class='sub'>{_e(cost.RATE_NOTE)}</p>"
-    )
-
-    stop_tbl = "".join(
-        f"<tr><td>{_e(k)}</td><td class='num'>{v}</td></tr>"
-        for k, v in sorted(s.stopping_rule_counts.items())
-    ) or "<tr><td colspan=2>none</td></tr>"
-
-    def _exc_badge(blocked: bool) -> str:
-        cls, txt = ("b-blocked", "blocked") if blocked else ("b-open", "not recovered")
-        return f"<span class='badge {cls}'>{txt}</span>"
-
-    exc_rows = "".join(
-        f"<tr><td><a href='/event/{_e(x['event_id'])}'>{_e(x['event_id'])}</a></td>"
-        f"<td>{_e(x['failure_type'])}</td><td>{_e(x['intervention'])}</td>"
-        f"<td class='num'>{_rupees(x['amount_inr'])}</td>"
-        f"<td>{_exc_badge(x['blocked'])}</td>"
-        f"<td>{_e(x['why'])}</td></tr>"
-        for x in exceptions
-    )
-
-    all_rows = "".join(
-        f"<tr><td><a href='/event/{_e(lc.event_id)}'>{_e(lc.event_id)}</a></td>"
-        f"<td>{_e(lc.failure_type)}</td><td>{_e(lc.decided_intervention)}</td>"
-        f"<td class='num'>{_rupees(lc.amount_inr)}</td>"
-        f"<td>{_status_badge(lc)}</td>"
-        f"<td>{_e(lc.result or '—')}</td></tr>"
-        for lc in sorted(lifecycles, key=lambda l: l.event_id)
-    )
-
-    banner = (
-        "<div class='banner'>⚠ Batch call outcomes below are <b>simulated</b> "
-        "(seeded model in <code>metrics/seed.py</code>) pending the Day-3 live "
-        "pilot. Rows tagged <b>real</b> in the drill-down are genuine Gemini "
-        "conversations.</div>" if has_simulated else ""
-    )
-
-    return _page(
-        "razorcovery — recovery metrics",
-        f"<h1>Recovery metrics</h1>"
-        f"<p class='sub'>Computed entirely from the append-only audit trail "
-        f"({s.total_events} events, {s.total_customers} customers).</p>"
-        f"{banner}"
-        f"<div class='cards'>{cards}</div>"
-        f"<h2>Recovery by intervention</h2>{_bucket_table(s.by_intervention, 'intervention')}"
-        f"<h2>Recovery by failure type</h2>{_bucket_table(s.by_failure_type, 'failure type')}"
-        f"<h2>Cost / effort per recovery</h2>{effort_tbl}"
-        f"<h2>Stopping rules fired</h2><table><thead><tr><th>rule</th>"
-        f"<th class='num'>count</th></tr></thead><tbody>{stop_tbl}</tbody></table>"
-        f"<h2>Exceptions — {s.exception_count} events not recovered</h2>"
-        f"<table><thead><tr><th>event</th><th>failure</th><th>intervention</th>"
-        f"<th class='num'>₹</th><th>status</th><th>why</th></tr></thead>"
-        f"<tbody>{exc_rows}</tbody></table>"
-        f"<h2>All events</h2>"
-        f"<table><thead><tr><th>event</th><th>failure</th><th>intervention</th>"
-        f"<th class='num'>₹</th><th>status</th><th>result</th></tr></thead>"
-        f"<tbody>{all_rows}</tbody></table>",
+        f"<span class='inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 "
+        f"text-xs font-medium ring-1 ring-inset {c}'>{_e(text)}</span>"
     )
 
 
 def _status_badge(lc: EventLifecycle) -> str:
     if lc.recovered:
-        return "<span class='badge b-recovered'>recovered</span>"
+        return _badge("recovered", "recovered")
     if lc.blocked:
-        return "<span class='badge b-blocked'>blocked</span>"
-    return "<span class='badge b-open'>open</span>"
+        return _badge("blocked", "blocked")
+    return _badge("open", "open")
 
 
-def detail_page(lc: EventLifecycle) -> str:
+def _stat_card(icon: str, tint: str, label: str, value: str, sub: str | None = None) -> str:
+    bg, fg = _TINTS[tint]
+    sub_html = f"<p class='mt-1 text-xs text-slate-400'>{_e(sub)}</p>" if sub else ""
+    return (
+        f"<div class='rounded-2xl border border-slate-200 bg-white p-5 shadow-sm'>"
+        f"<div class='flex h-10 w-10 items-center justify-center rounded-full {bg} {fg}'>"
+        f"{_icon(icon)}</div>"
+        f"<p class='mt-4 text-xs font-medium uppercase tracking-wide text-slate-400'>{_e(label)}</p>"
+        f"<p class='mt-1 text-2xl font-semibold text-slate-900 tabular-nums'>{value}</p>"
+        f"{sub_html}</div>"
+    )
+
+
+def _panel(pid: str, title: str, inner: str, caption: str | None = None) -> str:
+    cap = f"<p class='mt-0.5 text-sm text-slate-400'>{_e(caption)}</p>" if caption else ""
+    return (
+        f"<section id='{pid}' class='scroll-mt-6 rounded-2xl border border-slate-200 "
+        f"bg-white shadow-sm'>"
+        f"<header class='border-b border-slate-100 px-6 py-4'>"
+        f"<h2 class='text-base font-semibold text-slate-900'>{_e(title)}</h2>{cap}</header>"
+        f"<div class='px-6 py-5'>{inner}</div></section>"
+    )
+
+
+def _empty(icon: str, headline: str, subtext: str) -> str:
+    return (
+        f"<div class='flex flex-col items-center justify-center py-12 text-center'>"
+        f"<div class='flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400'>"
+        f"{_icon(icon, 'w-6 h-6')}</div>"
+        f"<p class='mt-4 text-sm font-semibold text-slate-700'>{_e(headline)}</p>"
+        f"<p class='mt-1 text-sm text-slate-400'>{_e(subtext)}</p></div>"
+    )
+
+
+def _table(headers: list[tuple[str, str]], rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    head = "".join(
+        f"<th class='{'text-right' if a == 'r' else 'text-left'} whitespace-nowrap "
+        f"px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400'>{_e(h)}</th>"
+        for h, a in headers
+    )
+    body = "".join(
+        "<tr class='border-t border-slate-100 hover:bg-slate-50/70'>"
+        + "".join(
+            f"<td class='{'text-right tabular-nums' if a == 'r' else ''} px-3 py-2.5 "
+            f"text-sm text-slate-700'>{c}</td>"
+            for c, (_, a) in zip(cells, headers)
+        )
+        + "</tr>"
+        for cells in rows
+    )
+    return (
+        f"<div class='overflow-x-auto'><table class='min-w-full'>"
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
+    )
+
+
+# --------------------------------------------------------------------------
+# shell
+# --------------------------------------------------------------------------
+def _sidebar(active: str, *, show_nav: bool) -> str:
+    if show_nav:
+        items = "".join(
+            f"<a href='#{pid}' class='flex items-center gap-3 rounded-lg px-3 py-2 text-sm "
+            f"font-medium {'bg-brand-50 text-brand-700' if pid == active else 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}'>"
+            f"<span class='{'text-brand-600' if pid == active else 'text-slate-400'}'>{_icon(icon, 'w-4 h-4')}</span>"
+            f"{_e(label)}</a>"
+            for pid, label, icon in _NAV
+        )
+        nav = f"<nav class='mt-8 space-y-1'>{items}</nav>"
+    else:
+        nav = (
+            "<a href='/' class='mt-8 flex items-center gap-2 rounded-lg px-3 py-2 text-sm "
+            "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700'>"
+            f"{_icon('back', 'w-4 h-4')} Back to overview</a>"
+        )
+    return (
+        "<aside class='fixed inset-y-0 left-0 hidden w-72 flex-col border-r border-slate-200 "
+        "bg-white px-5 py-6 lg:flex'>"
+        "<div class='flex items-center gap-3'>"
+        "<div class='flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white'>"
+        f"{_icon('phone', 'w-5 h-5')}</div>"
+        "<div><p class='text-sm font-semibold text-slate-900'>razorcovery</p>"
+        "<p class='text-xs text-slate-400'>revenue recovery</p></div></div>"
+        f"{nav}"
+        "<div class='mt-auto pt-6 text-xs text-slate-300'>computed from the audit trail</div>"
+        "</aside>"
+    )
+
+
+def _shell(title: str, active: str, body: str, *, show_nav: bool = True) -> str:
+    return (
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>{_e(title)}</title>"
+        "<script src='https://cdn.tailwindcss.com'></script>"
+        f"<script>{_TAILWIND_CONFIG}</script>"
+        "<link rel='preconnect' href='https://fonts.googleapis.com'>"
+        "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
+        "<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' rel='stylesheet'>"
+        "<style>body{font-family:Inter,system-ui,sans-serif}</style></head>"
+        "<body class='bg-canvas text-slate-800'>"
+        f"{_sidebar(active, show_nav=show_nav)}"
+        f"<main class='lg:pl-72'><div class='mx-auto max-w-5xl px-6 py-10'>{body}</div></main>"
+        "</body></html>"
+    )
+
+
+# --------------------------------------------------------------------------
+# pages
+# --------------------------------------------------------------------------
+def _bucket_rows(buckets) -> list[list[str]]:
+    return [
+        [
+            f"<span class='font-medium text-slate-900'>{_e(b.key)}</span>",
+            str(b.events), str(b.contacted), str(b.recovered),
+            _pct(b.recovery_rate),
+            _rupees(b.amount_at_risk_inr), _rupees(b.amount_recovered_inr),
+            _pct(b.value_recovery_rate),
+        ]
+        for b in buckets
+    ]
+
+
+_BUCKET_HEADERS = [
+    ("", "l"), ("events", "r"), ("contacted", "r"), ("recovered", "r"),
+    ("rate", "r"), ("₹ at risk", "r"), ("₹ recovered", "r"), ("₹ rate", "r"),
+]
+
+
+def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecycle],
+               *, has_simulated: bool) -> str:
+    eff = s.effort
+
+    banner = ""
+    if has_simulated:
+        banner = (
+            "<div class='mb-8 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4'>"
+            f"<span class='mt-0.5 text-amber-500'>{_icon('alert', 'w-5 h-5')}</span>"
+            "<p class='text-sm text-amber-800'>Batch call outcomes are "
+            "<span class='font-semibold'>simulated</span> (seeded model in "
+            "<code class='rounded bg-amber-100 px-1'>metrics/seed.py</code>) pending the "
+            "Day-3 live pilot. Drill-downs tagged <span class='font-semibold'>real</span> "
+            "are genuine Gemini conversations.</p></div>"
+        )
+
+    cards = (
+        _stat_card("bars", "teal", "recovery rate", _pct(s.recovery_rate),
+                   f"{s.recovered} of {s.contacted} contacted")
+        + _stat_card("rupee", "emerald", "₹ recovered", _rupees(s.amount_recovered_inr),
+                     f"of {_rupees(s.amount_at_risk_inr)} at risk")
+        + _stat_card("spark", "violet", "cost / recovery", f"₹{eff.cost_per_recovery_inr:.2f}",
+                     f"{eff.attempts_per_recovery} attempts each")
+        + _stat_card("alert", "rose", "exceptions", str(s.exception_count),
+                     "events not recovered")
+    )
+    overview = (
+        f"<section id='overview' class='scroll-mt-6'>"
+        f"<div class='grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>{cards}</div></section>"
+    )
+
+    by_int = _panel("intervention", "Recovery by intervention",
+                    _table(_BUCKET_HEADERS, _bucket_rows(s.by_intervention)),
+                    "which channel the decision layer chose, and how it did")
+    by_ft = _panel("failure-type", "Recovery by failure type",
+                   _table(_BUCKET_HEADERS, _bucket_rows(s.by_failure_type)),
+                   "payment retry vs checkout abandonment vs mandate failure")
+
+    effort_rows = [
+        ["recovered payments", str(eff.recovered)],
+        ["call attempts (total)", str(eff.total_attempts)],
+        ["attempts / recovery", str(eff.attempts_per_recovery)],
+        ["call minutes (total)", str(eff.total_call_minutes)],
+        ["call minutes / recovery", str(eff.call_minutes_per_recovery)],
+        ["SMS sent · links only", f"{eff.sms_sent} · {eff.links_only}"],
+        ["total spend", f"₹{eff.total_cost_inr:.2f}"],
+        ["cost / recovery", f"₹{eff.cost_per_recovery_inr:.2f}"],
+    ]
+    effort = _panel(
+        "effort", "Cost / effort per recovery",
+        _table([("", "l"), ("", "r")], [[f"<span class='text-slate-500'>{_e(a)}</span>", b]
+                                        for a, b in effort_rows])
+        + f"<p class='mt-3 text-xs text-slate-400'>{_e(cost.RATE_NOTE)}</p>",
+    )
+
+    if s.stopping_rule_counts:
+        stop_inner = _table(
+            [("rule", "l"), ("count", "r")],
+            [[f"<span class='font-medium text-slate-900'>{_e(k)}</span>", str(v)]
+             for k, v in sorted(s.stopping_rule_counts.items())],
+        )
+    else:
+        stop_inner = _empty("shield", "No stopping rules fired",
+                            "No refusals, attempt caps or out-of-window calls in this batch.")
+    stops = _panel("stopping-rules", "Stopping rules fired", stop_inner,
+                   "every trigger is also logged as its own audit event")
+
+    if exceptions:
+        exc_rows = [
+            [
+                f"<a href='/event/{_e(x['event_id'])}' class='font-medium text-brand-700 hover:underline'>{_e(x['event_id'])}</a>",
+                _e(x["failure_type"]), _e(x["intervention"]),
+                _rupees(x["amount_inr"]),
+                _badge("blocked", "blocked") if x["blocked"] else _badge("not recovered", "open"),
+                f"<span class='text-slate-500'>{_e(x['why'])}</span>",
+            ]
+            for x in exceptions
+        ]
+        exc_inner = _table(
+            [("event", "l"), ("failure", "l"), ("intervention", "l"),
+             ("₹", "r"), ("status", "l"), ("why", "l")],
+            exc_rows,
+        )
+    else:
+        exc_inner = _empty("check", "Nothing hidden — and nothing to hide",
+                           "Every event in this batch recovered.")
+    exc = _panel("exceptions", f"Exceptions — {s.exception_count} events not recovered",
+                 exc_inner, "shown, not hidden (PRD §5)")
+
+    all_rows = [
+        [
+            f"<a href='/event/{_e(lc.event_id)}' class='font-medium text-brand-700 hover:underline'>{_e(lc.event_id)}</a>",
+            _e(lc.failure_type), _e(lc.decided_intervention),
+            _rupees(lc.amount_inr), _status_badge(lc),
+            f"<span class='text-slate-500'>{_e(lc.result or '—')}</span>",
+        ]
+        for lc in sorted(lifecycles, key=lambda l: l.event_id)
+    ]
+    all_events = _panel(
+        "all-events", "All events",
+        _table([("event", "l"), ("failure", "l"), ("intervention", "l"),
+                ("₹", "r"), ("status", "l"), ("result", "l")], all_rows),
+    )
+
+    header = (
+        "<div class='mb-8'>"
+        "<h1 class='text-2xl font-semibold text-slate-900'>Recovery metrics</h1>"
+        f"<p class='mt-1 text-sm text-slate-500'>Computed entirely from the append-only "
+        f"audit trail — {s.total_events} events, {s.total_customers} customers.</p></div>"
+    )
+
+    return _shell(
+        "razorcovery — recovery metrics", "overview",
+        header + banner + overview
+        + "<div class='mt-8 space-y-8'>"
+        + by_int + by_ft + effort + stops + exc + all_events
+        + "</div>",
+    )
+
+
+def detail_page(lc: EventLifecycle | None) -> str:
     if lc is None:
-        return _page("not found", "<a class='back' href='/'>← back</a><p>Unknown event.</p>")
+        return _shell(
+            "not found", "", show_nav=False,
+            body=_empty("alert", "Unknown event", "No audit rows for that id."),
+        )
 
-    facts = (
-        "<table><tbody>"
-        f"<tr><th>event</th><td><code>{_e(lc.event_id)}</code></td></tr>"
-        f"<tr><th>customer</th><td>{_e(lc.customer_id)}</td></tr>"
-        f"<tr><th>failure type</th><td>{_e(lc.failure_type)}</td></tr>"
-        f"<tr><th>amount at risk</th><td>{_rupees(lc.amount_inr)}</td></tr>"
-        f"<tr><th>decided intervention</th><td>{_e(lc.decided_intervention)}</td></tr>"
-        f"<tr><th>decision reason</th><td>{_e(lc.decision_reason)}</td></tr>"
-        f"<tr><th>status</th><td>{_status_badge(lc)}</td></tr>"
-        f"<tr><th>result</th><td>{_e(lc.result or '—')}</td></tr>"
-        f"<tr><th>call time</th><td>{round(lc.call_seconds,1)}s</td></tr>"
-        f"<tr><th>retry link</th><td>{_e(lc.retry_link_url or '—')}</td></tr>"
-        "</tbody></table>"
+    facts = [
+        ("customer", _e(lc.customer_id)),
+        ("failure type", _e(lc.failure_type)),
+        ("amount at risk", _rupees(lc.amount_inr)),
+        ("decided intervention", _e(lc.decided_intervention)),
+        ("result", _e(lc.result or "—")),
+        ("call time", f"{round(lc.call_seconds, 1)}s"),
+        ("retry link", _e(lc.retry_link_url or "—")),
+    ]
+    facts_grid = (
+        "<dl class='grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2'>"
+        + "".join(
+            f"<div class='flex justify-between gap-4 border-b border-slate-100 pb-2'>"
+            f"<dt class='text-sm text-slate-400'>{k}</dt>"
+            f"<dd class='text-sm font-medium text-slate-800 text-right'>{v}</dd></div>"
+            for k, v in facts
+        )
+        + "</dl>"
+        + f"<p class='mt-4 text-sm text-slate-500'>{_e(lc.decision_reason or '')}</p>"
     )
 
-    stops = "".join(
-        f"<li><span class='badge b-blocked'>{_e(sr['rule'])}</span> {_e(sr['reason'])}"
-        f"{' <em>(' + _e(sr['stage']) + ')</em>' if sr.get('stage') else ''}</li>"
-        for sr in lc.stopping_rules
-    )
-    stops_block = f"<h2>Stopping rules</h2><ul class='timeline'>{stops}</ul>" if stops else ""
+    if lc.stopping_rules:
+        def _stop_li(sr: dict) -> str:
+            stage = ""
+            if sr.get("stage"):
+                stage = f" <span class='text-slate-400'>({_e(sr['stage'])})</span>"
+            return (
+                f"<li class='flex gap-3'>{_badge(_e(sr['rule']), 'blocked')}"
+                f"<span class='text-sm text-slate-600'>{_e(sr['reason'])}{stage}</span></li>"
+            )
 
-    tl = "".join(
-        f"<li><code>{_e(r['entry_type'])}</code>"
-        f"{' — ' + _e(r['reason']) if r['reason'] else ''}</li>"
-        for r in lc.timeline
-    )
+        stop_inner = "<ul class='space-y-3'>" + "".join(_stop_li(sr) for sr in lc.stopping_rules) + "</ul>"
+    else:
+        stop_inner = _empty("shield", "No stopping rules triggered",
+                            "This event was contacted within all limits.")
 
     src = lc.transcript_source or "n/a"
     if lc.transcript:
-        turns = "".join(
-            f"<div class='turn {'agent' if t['role'] in ('assistant','agent') else 'user'}'>"
-            f"<div class='role'>{_e('Priya' if t['role'] in ('assistant','agent') else 'Customer')}</div>"
-            f"<div>{_e(t['text'])}</div></div>"
-            for t in lc.transcript
-        )
-        transcript_block = (
-            f"<h2>Call transcript "
-            f"<span class='badge {'b-recovered' if src=='real' else 'b-open'}'>{_e(src)}</span></h2>"
-            f"<div>{turns}</div>"
-        )
+        turns = []
+        for t in lc.transcript:
+            is_agent = t["role"] in ("assistant", "agent")
+            who = "Priya" if is_agent else "Customer"
+            avatar_bg = "bg-brand-600 text-white" if is_agent else "bg-slate-200 text-slate-600"
+            bubble = "bg-brand-50 text-slate-800" if is_agent else "bg-slate-100 text-slate-700"
+            row_dir = "flex-row-reverse" if is_agent else ""
+            turns.append(
+                f"<div class='flex gap-3 {row_dir}'>"
+                f"<div class='flex h-8 w-8 shrink-0 items-center justify-center rounded-full "
+                f"text-xs font-semibold {avatar_bg}'>{who[0]}</div>"
+                f"<div class='max-w-md rounded-2xl px-4 py-2 text-sm {bubble}'>"
+                f"<p class='mb-0.5 text-xs font-medium text-slate-400'>{who}</p>{_e(t['text'])}</div></div>"
+            )
+        transcript_inner = "<div class='space-y-2'>" + "".join(turns) + "</div>"
+        transcript_title = "Call transcript"
+        transcript_cap = None
     else:
-        transcript_block = f"<h2>Call transcript</h2><p class='sub'>No transcript ({_e(src)}).</p>"
+        transcript_inner = _empty(
+            "phone", "No transcript",
+            "No call was connected." if src == "n/a" else f"Source: {src}.",
+        )
+        transcript_title = "Call transcript"
+        transcript_cap = None
 
-    return _page(
-        f"{lc.event_id} — recovery detail",
-        f"<a class='back' href='/'>← all events</a>"
-        f"<h1>{_e(lc.event_id)}</h1>"
-        f"{facts}"
-        f"{stops_block}"
-        f"{transcript_block}"
-        f"<h2>Full audit timeline</h2><ol class='timeline'>{tl}</ol>",
+    def _tl_li(r: dict) -> str:
+        reason = f"<p class='text-sm text-slate-500'>{_e(r['reason'])}</p>" if r["reason"] else ""
+        return (
+            "<li><span class='absolute -left-[7px] mt-1.5 h-3 w-3 rounded-full border-2 "
+            "border-white bg-brand-500'></span>"
+            f"<p class='text-sm font-medium text-slate-800'>{_e(r['entry_type'])}</p>{reason}</li>"
+        )
+
+    timeline_inner = (
+        "<ol class='relative space-y-4 border-l border-slate-200 pl-6'>"
+        + "".join(_tl_li(r) for r in lc.timeline)
+        + "</ol>"
     )
+
+    header = (
+        "<div class='mb-8 flex items-center gap-3'>"
+        f"<h1 class='text-2xl font-semibold text-slate-900'>{_e(lc.event_id)}</h1>"
+        f"{_status_badge(lc)}"
+        f"{_badge(src, src) if lc.transcript else ''}</div>"
+    )
+
+    body = (
+        header
+        + "<div class='space-y-8'>"
+        + _panel("facts", "Event", facts_grid)
+        + _panel("stops", "Stopping rules", stop_inner)
+        + _panel("transcript", transcript_title, transcript_inner, transcript_cap)
+        + _panel("timeline", "Full audit timeline", timeline_inner)
+        + "</div>"
+    )
+    return _shell(f"{lc.event_id} — recovery detail", "", body, show_nav=False)

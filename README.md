@@ -47,6 +47,7 @@ Metrics view (needs GOOGLE_API_KEY for `--real`; DATABASE_URL always):
 
 ```bash
 python -m metrics.seed --reset --real 4              # populate outcomes
+python -m metrics.seed --append-real 5               # add real Gemini transcripts
 uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
 ```
 
@@ -99,7 +100,9 @@ default `UnconfiguredDialer` that refuses to place a call until a provider
 
 ## Metrics view
 
-`metrics/` — FastAPI, read-only, no auth, no framework, everything computed from
+`metrics/` — FastAPI, read-only, no auth. Server-rendered HTML styled with the
+Tailwind CDN (no build step, no React / component library); fixed sidebar,
+stat-card row, white content panels, empty states. Everything is computed from
 `audit_log` at request time (`metrics/compute.py`).
 
 - `GET /` — recovery rate + ₹ recovered by intervention and by failure type;
