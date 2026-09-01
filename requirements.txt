@@ -1,8 +1,12 @@
-# Day 1 scope: data generator, audit trail, decision layer, tests.
-# (FastAPI / LiveKit / telephony come in later passes.)
+# Day 1: data generator, audit trail, decision layer.
 pydantic>=2.6
 psycopg[binary]>=3.1
 python-dotenv>=1.0
 Faker>=24.0
 tzdata>=2024.1          # zoneinfo needs this on Windows
 pytest>=8.0
+
+# Day 2: LiveKit voice agent (Gemini Live via the Google plugin).
+livekit-agents>=1.0
+livekit-plugins-google>=1.0
+livekit-plugins-silero>=1.0   # VAD for the fallback STT->LLM->TTS path
