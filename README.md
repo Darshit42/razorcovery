@@ -11,8 +11,11 @@ See `PRD.md` for scope, `CLAUDE.md` for working rules.
 - [x] Tests: stopping rules provably block calls
 - [x] LiveKit Hinglish voice agent — first pass (Gemini Live)
 - [x] Metrics view — FastAPI + one HTML page, computed from the audit trail
-- [ ] Telephony provider + one live call end-to-end
-- [ ] Day-3 live pilot: real calls replace simulated batch outcomes
+- [x] Merchant intake — upload a contact sheet, run the recovery batch,
+      watch it live, download the results
+- [x] Real outbound-SIP dialer (activates on LIVEKIT_* + SIP trunk creds)
+- [ ] Telephony provider account + one live PSTN call end-to-end
+- [ ] Day-3 live pilot with a real merchant
 
 ## Setup
 
@@ -55,6 +58,10 @@ python -m metrics.seed --reset --simulate            # fast, seeded estimates, n
 uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
 ```
 
+Or drive it from a real sheet: open `http://localhost:8000/upload`, upload a
+CSV/XLSX of contacts, tick the consent attestation, and run the batch — watch
+it live at `/batch/{id}` and download the results.
+
 Every `--reset` regenerates the synthetic batch with a random seed and a
 random count (45-75) — different customers, amounts and failure mix each
 run. `--keep-events` reuses the current fixture; `--gen-seed N` / `--count N`
@@ -72,8 +79,10 @@ Gemini 2.5 Flash list price; telephony is ₹0 until a provider is chosen.
 data/       synthetic event generator + pydantic schemas + fixtures
 decision/   failure-type -> intervention routing, stopping rules, batch runner
 audit/      append-only Postgres audit log (schema, writer, reader, export)
-voice/      LiveKit Gemini-Live agent: prompt, flow (logged tools), dispatch
-metrics/    FastAPI read-only metrics view over audit_log + one HTML page
+voice/      Gemini agent: prompt, flow (logged tools), headless conversation,
+            LiveKit outbound-SIP dialer
+intake/     merchant sheet -> parse (CSV/XLSX) -> batch/batch_row -> async runner
+metrics/    FastAPI: dashboard + intake routes, computed from audit_log
 tests/
 ```
 
@@ -109,9 +118,34 @@ are function tools (`send_retry_link`, `mark_do_not_contact`, `wrong_person`,
 logged tools do. The prompt forbids asking for card/CVV/OTP/UPI PIN and requires
 honouring a hard "don't contact me again" immediately.
 
-Telephony is not wired: `voice/dispatch.py` exposes a `Dialer` interface and a
-default `UnconfiguredDialer` that refuses to place a call until a provider
-(Exotel/Twilio/Plivo -> LiveKit SIP participant) is chosen (PRD §10).
+Telephony: `voice/dialer.py` has a real `LiveKitSipDialer` that dials via a
+LiveKit outbound SIP trunk (`CreateSIPParticipantRequest`). It activates when
+`LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `SIP_OUTBOUND_TRUNK_ID`
+are set in `.env` (trunk pointed at Twilio/Plivo/Exotel). Until then
+`UnconfiguredDialer` runs and each voice row uses `voice/headless.converse` —
+a real Gemini conversation with a scripted synthetic customer, no PSTN.
+
+## Merchant intake workflow
+
+`intake/` — a merchant uploads a contact sheet and the recovery batch runs
+against it. No hardcoded values; every number on the batch and dashboard is
+computed from `audit_log`.
+
+- `GET /upload` — CSV or XLSX. Columns are auto-detected (`intake/parse.py`:
+  fuzzy header match, `+91` phone normalisation, dedup). A required consent
+  attestation gates the run (PRD §1a: merchant's own customers only).
+- Preview shows valid rows + every rejected row *with the reason* — nothing
+  is silently dropped.
+- `POST /upload` (attested) creates a `batch` + one `batch_row` per contact.
+- `POST /batch/{id}/run` spawns `python -m intake.run_batch <id>` (subprocess:
+  LiveKit plugins need the process main thread). Per row: build a real
+  `FailureEvent` → `decision.route` → dial (if telephony configured) or
+  headless Gemini conversation → audit rows tagged `payload.batch_id`.
+- `GET /batch/{id}` — live progress bar + records table (polls
+  `/batch/{id}/progress`). `GET /batch/{id}/stream` is the SSE feed.
+- `GET /batch/{id}/export.csv` / `.json` — per-row decision + outcome +
+  transcript. `GET /?batch=<id>` slices the whole dashboard to that batch.
+- `GET /batches` — all batches.
 
 ## Metrics view
 

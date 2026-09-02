@@ -188,30 +188,44 @@ def _table(headers: list[tuple[str, str]], rows: list[list[str]]) -> str:
 # --------------------------------------------------------------------------
 # shell
 # --------------------------------------------------------------------------
+_PAGES = [
+    ("/", "Dashboard", "grid"),
+    ("/upload", "Upload sheet", "spark"),
+    ("/batches", "Batches", "list"),
+]
+
+
 def _sidebar(active: str, *, show_nav: bool) -> str:
-    if show_nav:
-        items = "".join(
-            f"<a href='#{pid}' class='flex items-center gap-3 rounded-lg px-3 py-2 text-sm "
-            f"font-medium {'bg-brand-50 text-brand-700' if pid == active else 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}'>"
-            f"<span class='{'text-brand-600' if pid == active else 'text-slate-400'}'>{_icon(icon, 'w-4 h-4')}</span>"
-            f"{_e(label)}</a>"
-            for pid, label, icon in _NAV
+    def _page_link(href: str, label: str, icon: str, cur: bool) -> str:
+        cls = ("bg-brand-50 text-brand-700" if cur
+               else "text-slate-500 hover:bg-slate-100 hover:text-slate-700")
+        ic = "text-brand-600" if cur else "text-slate-400"
+        return (
+            f"<a href='{href}' class='flex items-center gap-3 rounded-lg px-3 py-2 "
+            f"text-sm font-medium {cls}'>"
+            f"<span class='{ic}'>{_icon(icon, 'w-4 h-4')}</span>{_e(label)}</a>"
         )
-        nav = f"<nav class='mt-8 space-y-1'>{items}</nav>"
-    else:
-        nav = (
-            "<a href='/' class='mt-8 flex items-center gap-2 rounded-lg px-3 py-2 text-sm "
-            "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700'>"
-            f"{_icon('back', 'w-4 h-4')} Back to overview</a>"
+
+    pages = "".join(_page_link(h, l, i, active == h) for h, l, i in _PAGES)
+    nav = f"<nav class='mt-8 space-y-1'>{pages}</nav>"
+
+    if show_nav and active == "/":
+        sub = "".join(
+            f"<a href='#{pid}' class='flex items-center gap-3 rounded-lg px-3 py-1.5 "
+            f"text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-700'>"
+            f"<span class='text-slate-400'>{_icon(icon, 'w-4 h-4')}</span>{_e(label)}</a>"
+            for pid, label, icon in _NAV[1:]
         )
+        nav += f"<div class='mt-4 border-t border-slate-100 pt-4 space-y-1'>{sub}</div>"
+
     return (
         "<aside class='fixed inset-y-0 left-0 hidden w-72 flex-col border-r border-slate-200 "
         "bg-white px-5 py-6 lg:flex'>"
-        "<div class='flex items-center gap-3'>"
+        "<a href='/' class='flex items-center gap-3'>"
         "<div class='flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white'>"
         f"{_icon('phone', 'w-5 h-5')}</div>"
         "<div><p class='text-sm font-semibold text-slate-900'>razorcovery</p>"
-        "<p class='text-xs text-slate-400'>revenue recovery</p></div></div>"
+        "<p class='text-xs text-slate-400'>revenue recovery</p></div></a>"
         f"{nav}"
         "<div class='mt-auto pt-6 text-xs text-slate-300'>computed from the audit trail</div>"
         "</aside>"
@@ -424,12 +438,22 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
                 ("₹", "r"), ("status", "l"), ("result", "l")], all_rows),
     )
 
+    batch_chip = ""
+    if filters.get("batch"):
+        batch_chip = (
+            "<div class='mt-2 inline-flex items-center gap-2 rounded-full bg-brand-50 "
+            "px-3 py-1 text-sm text-brand-700'>"
+            f"batch <code class='font-medium'>{_e(filters['batch'])}</code>"
+            f"<a href='/batch/{_e(filters['batch'])}' class='underline'>open batch</a>"
+            "<a href='/' class='text-brand-500 hover:text-brand-700'>&times; all events</a></div>"
+        )
     header = (
         "<div class='mb-8'>"
         "<h1 class='text-2xl font-semibold text-slate-900'>Recovery metrics</h1>"
         f"<p class='mt-1 text-sm text-slate-500'>Computed entirely from the append-only "
         f"audit trail — {s.total_events} of {total_events} events"
-        f"{', ' + str(s.total_customers) + ' customers' if s.total_events else ''}.</p></div>"
+        f"{', ' + str(s.total_customers) + ' customers' if s.total_events else ''}.</p>"
+        f"{batch_chip}</div>"
     )
 
     filter_bar = _filter_bar(filters, total_events, s.total_events, filters_active)
@@ -448,7 +472,7 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
             + "</div>"
         )
 
-    return _shell("razorcovery — recovery metrics", "overview", body)
+    return _shell("razorcovery — recovery metrics", "/", body)
 
 
 def detail_page(lc: EventLifecycle | None) -> str:
@@ -552,3 +576,231 @@ def detail_page(lc: EventLifecycle | None) -> str:
         + "</div>"
     )
     return _shell(f"{lc.event_id} — recovery detail", "", body, show_nav=False)
+
+
+# --------------------------------------------------------------------------
+# intake workflow pages
+# --------------------------------------------------------------------------
+_ATTEST_TEXT = (
+    "These are our own customers with an existing transaction relationship "
+    "(a failed payment, a lapsed subscription, an abandoned checkout) and they "
+    "have consented to be contacted about it. No cold or purchased numbers."
+)
+
+
+def _input(name: str, label: str, *, value: str = "", required: bool = False,
+           placeholder: str = "") -> str:
+    return (
+        f"<label class='block'><span class='text-sm font-medium text-slate-600'>{_e(label)}"
+        f"{' *' if required else ''}</span>"
+        f"<input name='{name}' value='{_e(value)}' placeholder='{_e(placeholder)}'"
+        f"{' required' if required else ''} "
+        f"class='mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 "
+        f"text-sm text-slate-800'></label>"
+    )
+
+
+def upload_page(*, merchant: str = "", batch_name: str = "", error: str = "") -> str:
+    err = (f"<div class='mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 "
+           f"text-sm text-rose-700'>{_e(error)}</div>" if error else "")
+    body = (
+        "<div class='mb-8'><h1 class='text-2xl font-semibold text-slate-900'>Upload a contact sheet</h1>"
+        "<p class='mt-1 text-sm text-slate-500'>CSV or XLSX. One row per customer whose "
+        "payment failed. We auto-detect the columns; you can override the phone column below.</p></div>"
+        f"{err}"
+        "<form method='post' action='/upload' enctype='multipart/form-data' "
+        "class='max-w-xl space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm'>"
+        "<label class='block'><span class='text-sm font-medium text-slate-600'>Contact sheet *</span>"
+        "<input type='file' name='file' accept='.csv,.xlsx,.xlsm' required "
+        "class='mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm'></label>"
+        f"{_input('merchant', 'Merchant name', value=merchant, required=True, placeholder='ChaiPoint')}"
+        f"{_input('batch_name', 'Batch name', value=batch_name, placeholder='March failed payments')}"
+        "<label class='block'><span class='text-sm font-medium text-slate-600'>Phone column "
+        "(optional — auto-detected)</span>"
+        "<input name='phone_column' placeholder='e.g. mobile' "
+        "class='mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm'></label>"
+        "<label class='block'><span class='text-sm font-medium text-slate-600'>Failure type "
+        "if the sheet has none</span>"
+        "<select name='failure_type' class='mt-1 w-full rounded-lg border border-slate-200 "
+        "bg-white px-3 py-2 text-sm'>"
+        "<option value=''>infer per row (default payment_retry)</option>"
+        "<option value='payment_retry'>payment_retry</option>"
+        "<option value='checkout_abandonment'>checkout_abandonment</option>"
+        "<option value='mandate_failure'>mandate_failure</option></select></label>"
+        "<label class='flex gap-3 rounded-lg bg-amber-50 border border-amber-200 p-3'>"
+        "<input type='checkbox' name='attest' class='mt-1' required>"
+        f"<span class='text-sm text-amber-800'>{_e(_ATTEST_TEXT)}</span></label>"
+        "<button type='submit' class='rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium "
+        "text-white hover:bg-brand-700'>Parse &amp; preview</button>"
+        "</form>"
+    )
+    return _shell("razorcovery — upload", "/upload", body)
+
+
+def upload_preview_page(result, *, merchant: str, batch_name: str, filename: str,
+                        attested: bool, failure_type: str) -> str:
+    err_rows = "".join(
+        f"<tr class='border-t border-slate-100'><td class='px-3 py-2 text-sm'>{e.row or '—'}</td>"
+        f"<td class='px-3 py-2 text-sm'>{_e(e.field or '')}</td>"
+        f"<td class='px-3 py-2 text-sm text-slate-600'>{_e(e.message)}</td></tr>"
+        for e in result.errors[:200]
+    )
+    errors_block = _panel(
+        "errors", f"{result.invalid_count} rows can't be used",
+        _table([("row", "l"), ("field", "l"), ("problem", "l")],
+               [[str(e.row or "—"), _e(e.field or ""), _e(e.message)] for e in result.errors[:200]]),
+    ) if result.errors else ""
+
+    preview_rows = [
+        [str(r.row_index), _e(r.customer_name), _e(r.phone), _rupees(r.amount_inr),
+         _e(r.failure_type), _e(r.reference_id)]
+        for r in result.valid_rows[:25]
+    ]
+    preview = _panel(
+        "preview", f"{result.valid_count} valid rows (showing {min(25, result.valid_count)})",
+        _table([("row", "l"), ("name", "l"), ("phone", "l"), ("amount", "r"),
+                ("failure", "l"), ("ref", "l")], preview_rows),
+        f"detected mapping: {_e(json_compact(result.detected_mapping))}",
+    ) if result.valid_rows else _empty("alert", "No usable rows",
+                                       "Fix the sheet and upload again.")
+
+    attest_note = "" if attested else (
+        "<div class='mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 "
+        "text-sm text-amber-800'>You didn't tick the consent attestation. Go back, "
+        "tick it, and upload again — the batch won't be created without it.</div>"
+    )
+
+    body = (
+        "<a class='mb-4 inline-flex items-center gap-2 text-sm text-slate-500' "
+        f"href='/upload'>{_icon('back','w-4 h-4')} Back to upload</a>"
+        f"<div class='mb-6'><h1 class='text-2xl font-semibold text-slate-900'>Preview — {_e(filename)}</h1>"
+        f"<p class='mt-1 text-sm text-slate-500'>{result.total_rows} rows read · "
+        f"{result.valid_count} valid · {result.invalid_count} rejected · "
+        f"{len(result.duplicate_phones)} duplicate numbers.</p></div>"
+        f"{attest_note}"
+        "<div class='space-y-8'>"
+        f"{preview}{errors_block}"
+        "</div>"
+    )
+    return _shell("razorcovery — upload preview", "/upload", body)
+
+
+def json_compact(d: dict) -> str:
+    return ", ".join(f"{k}={v}" for k, v in d.items() if v)
+
+
+_ROW_STATUS_TONE = {
+    "queued": "open", "in_progress": "open", "completed": "recovered",
+    "failed": "blocked", "blocked": "blocked", "skipped": "open",
+}
+
+
+def batch_page(batch: dict, rows: list[dict], progress: dict, *, running: bool) -> str:
+    bid = batch["id"]
+    done = batch["status"] in ("done", "failed")
+
+    run_btn = ""
+    if batch["status"] == "pending" and not running:
+        run_btn = (
+            f"<form method='post' action='/batch/{_e(bid)}/run'>"
+            "<button class='rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white "
+            f"hover:bg-brand-700'>Start batch — {batch['total_rows']} rows</button></form>"
+        )
+    elif running or batch["status"] == "running":
+        run_btn = "<span class='text-sm text-slate-500'>running…</span>"
+
+    links = (
+        f"<a href='/?batch={_e(bid)}' class='text-sm text-brand-700 hover:underline'>Open in dashboard</a>"
+        f"<a href='/batch/{_e(bid)}/export.csv' class='text-sm text-brand-700 hover:underline'>Download CSV</a>"
+        f"<a href='/batch/{_e(bid)}/export.json' class='text-sm text-brand-700 hover:underline'>Download JSON</a>"
+    ) if done else ""
+
+    bar = (
+        "<div class='mt-4'><div class='flex justify-between text-xs text-slate-500'>"
+        f"<span id='b-label'>{progress['done']} / {progress['total']} done</span>"
+        f"<span id='b-rec'>{progress['recovered']} recovered</span></div>"
+        "<div class='mt-1 h-2 w-full rounded-full bg-slate-100'>"
+        f"<div id='b-fill' class='h-2 rounded-full bg-brand-500 transition-all' "
+        f"style='width:{progress['pct']}%'></div></div></div>"
+    )
+
+    row_html = "".join(
+        f"<tr class='border-t border-slate-100'>"
+        f"<td class='px-3 py-2 text-sm'>{r['row_index']}</td>"
+        f"<td class='px-3 py-2 text-sm'>{_e(r['customer_name'])}</td>"
+        f"<td class='px-3 py-2 text-sm'>{_e(r['phone'])}</td>"
+        f"<td class='px-3 py-2 text-sm text-right tabular-nums'>{_rupees(r['amount_inr'])}</td>"
+        f"<td class='px-3 py-2 text-sm'>{_e(r['decided_intervention'] or '—')}</td>"
+        f"<td class='px-3 py-2 text-sm'>{_badge(r['status'].replace('_',' '), _ROW_STATUS_TONE.get(r['status'],'open'))}</td>"
+        f"<td class='px-3 py-2 text-sm text-slate-600'>{_e(r['result'] or '')}"
+        f"{(' · ' + _e(r['error'])) if r['error'] else ''}"
+        f" <a href='/event/{_e(r['event_id'])}' class='text-brand-700 hover:underline'>view</a></td></tr>"
+        for r in rows
+    )
+    table = (
+        "<div class='overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm'>"
+        "<table class='min-w-full'><thead><tr>"
+        + "".join(f"<th class='px-3 py-2 text-left text-xs font-semibold uppercase "
+                  f"tracking-wide text-slate-400'>{h}</th>"
+                  for h in ["row", "name", "phone", "amount", "intervention", "status", "result"])
+        + f"</tr></thead><tbody id='rows'>{row_html}</tbody></table></div>"
+    )
+
+    poll = "" if done else (
+        "<script>"
+        f"const b='{bid}';"
+        "async function tick(){"
+        f" const r=await fetch('/batch/'+b+'/progress'); const p=await r.json();"
+        " document.getElementById('b-fill').style.width=p.pct+'%';"
+        " document.getElementById('b-label').textContent=p.done+' / '+p.total+' done';"
+        " document.getElementById('b-rec').textContent=p.recovered+' recovered';"
+        " if(p.status==='done'||p.status==='failed'){location.reload();return;}"
+        " setTimeout(tick,2000);}"
+        "tick();</script>"
+    )
+
+    body = (
+        "<a class='mb-4 inline-flex items-center gap-2 text-sm text-slate-500' "
+        f"href='/batches'>{_icon('back','w-4 h-4')} All batches</a>"
+        f"<div class='flex items-start justify-between gap-4'>"
+        f"<div><h1 class='text-2xl font-semibold text-slate-900'>{_e(batch['name'])}</h1>"
+        f"<p class='mt-1 text-sm text-slate-500'>{_e(batch['merchant'])} · "
+        f"{_e(batch['source_filename'])} · {batch['total_rows']} rows · "
+        f"status <b>{_e(batch['status'])}</b></p></div>{run_btn}</div>"
+        f"{bar}"
+        f"<div class='mt-3 flex gap-4'>{links}</div>"
+        f"<div class='mt-6'>{table}</div>"
+        f"{poll}"
+    )
+    return _shell(f"razorcovery — {batch['name']}", "/batches", body)
+
+
+def batches_page(items: list[dict]) -> str:
+    if not items:
+        body = ("<h1 class='text-2xl font-semibold text-slate-900'>Batches</h1>"
+                + _empty("list", "No batches yet",
+                         "Upload a contact sheet to start a recovery run.")
+                + "<a href='/upload' class='mt-4 inline-block rounded-lg bg-brand-600 "
+                  "px-4 py-2 text-sm font-medium text-white'>Upload a sheet</a>")
+        return _shell("razorcovery — batches", "/batches", body)
+
+    rows = [
+        [
+            f"<a href='/batch/{_e(b['id'])}' class='font-medium text-brand-700 hover:underline'>{_e(b['name'])}</a>",
+            _e(b["merchant"]), _badge(b["status"], "recovered" if b["status"] == "done" else "open"),
+            str(b["total_rows"]), str(b["completed"]), str(b["recovered"]),
+            str(b["created_at"])[:16].replace("T", " "),
+        ]
+        for b in items
+    ]
+    body = (
+        "<div class='mb-6 flex items-center justify-between'>"
+        "<h1 class='text-2xl font-semibold text-slate-900'>Batches</h1>"
+        "<a href='/upload' class='rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium "
+        "text-white hover:bg-brand-700'>Upload a sheet</a></div>"
+        + _panel("list", "All batches",
+                 _table([("batch", "l"), ("merchant", "l"), ("status", "l"),
+                         ("rows", "l"), ("completed", "l"), ("recovered", "l"),
+                         ("created", "l")], rows))
+    )
+    return _shell("razorcovery — batches", "/batches", body)

@@ -1,36 +1,53 @@
-"""Read-only metrics view over the audit trail.
+"""Metrics view + merchant intake workflow.
 
     uvicorn metrics.app:app --port 8000
-    # or: python -m metrics.app
 
-Routes:
-    GET /               HTML dashboard
-    GET /event/{id}     HTML drill-down (facts + stopping rules + transcript + timeline)
-    GET /api/summary    JSON
-    GET /api/exceptions JSON
-    GET /api/event/{id} JSON
-
-No auth, no write paths. Everything is derived from audit_log at request time.
+Read paths: the dashboard and drill-down over audit_log.
+Write paths: /upload accepts a contact sheet, /batch/{id}/run executes
+the recovery workflow for it. No auth (single-tenant demo).
 """
 from __future__ import annotations
 
+import asyncio
+import csv as _csv
 import dataclasses
+import io
+import json
+import subprocess
+import sys
 from datetime import date
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from audit import db
 from audit.log import query
+from intake import parse as intake_parse
+from intake import store as intake_store
 from metrics import compute, templates
 
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 load_dotenv()
-app = FastAPI(title="razorcovery metrics", docs_url=None, redoc_url=None)
+app = FastAPI(title="razorcovery", docs_url=None, redoc_url=None)
 
 
-def _rows():
+_ROW_COLS = ["id", "ts", "event_id", "customer_id", "entry_type", "failure_type",
+             "intervention", "reason", "amount_inr", "attempt_number", "payload"]
+
+
+def _rows(batch: str | None = None):
     with db.get_conn() as conn:
+        if batch:
+            raw = conn.execute(
+                f"SELECT {', '.join(_ROW_COLS)} FROM audit_log "
+                "WHERE payload->>'batch_id' = %s ORDER BY id",
+                (batch,),
+            ).fetchall()
+            return [dict(zip(_ROW_COLS, r)) for r in raw]
         return query(conn)
 
 
@@ -52,12 +69,14 @@ def _parse_date(s: str | None) -> date | None:
 class Filters:
     """Query params shared by the HTML page and the JSON endpoints."""
 
-    def __init__(self, failure_type=None, intervention=None, status=None, since=None, until=None):
+    def __init__(self, failure_type=None, intervention=None, status=None,
+                 since=None, until=None, batch=None):
         self.failure_type = failure_type if failure_type in compute.FAILURE_TYPES else None
         self.intervention = intervention if intervention in compute.INTERVENTIONS else None
         self.status = status if status in compute.STATUSES else None
         self.since = _parse_date(since)
         self.until = _parse_date(until)
+        self.batch = batch or None
 
     def apply(self, lifecycles):
         return compute.filter_lifecycles(
@@ -76,6 +95,7 @@ class Filters:
             "status": self.status or "",
             "since": self.since.isoformat() if self.since else "",
             "until": self.until.isoformat() if self.until else "",
+            "batch": self.batch or "",
         }
 
     @property
@@ -89,13 +109,14 @@ def _filters(
     status: str | None = Query(None),
     since: str | None = Query(None),
     until: str | None = Query(None),
+    batch: str | None = Query(None),
 ) -> Filters:
-    return Filters(failure_type, intervention, status, since, until)
+    return Filters(failure_type, intervention, status, since, until, batch)
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(f: Filters = Depends(_filters)) -> str:
-    rows = _rows()
+    rows = _rows(batch=f.batch)
     all_lcs = list(compute.reconstruct(rows).values())
     shown = f.apply(all_lcs)
     return templates.index_page(
@@ -117,7 +138,7 @@ def event_detail(event_id: str) -> str:
 
 @app.get("/api/summary")
 def api_summary(f: Filters = Depends(_filters)) -> dict:
-    shown = f.apply(list(compute.reconstruct(_rows()).values()))
+    shown = f.apply(list(compute.reconstruct(_rows(batch=f.batch)).values()))
     s = compute.summarise_lifecycles(shown)
     return dataclasses.asdict(s) | {
         "filters": f.as_dict(),
@@ -130,7 +151,7 @@ def api_summary(f: Filters = Depends(_filters)) -> dict:
 
 @app.get("/api/exceptions")
 def api_exceptions(f: Filters = Depends(_filters)) -> list[dict]:
-    shown = f.apply(list(compute.reconstruct(_rows()).values()))
+    shown = f.apply(list(compute.reconstruct(_rows(batch=f.batch)).values()))
     return compute.exceptions(shown)
 
 
@@ -144,6 +165,191 @@ def api_event(event_id: str) -> dict:
     d["blocked"] = lc.blocked
     d["contacted"] = lc.contacted
     return d
+
+
+# ------------------------------------------------------------------ #
+#  Intake workflow: upload -> batch -> run -> view / export
+# ------------------------------------------------------------------ #
+
+_MAX_UPLOAD = 5 * 1024 * 1024  # 5 MB
+
+
+@app.get("/upload", response_class=HTMLResponse)
+def upload_form() -> str:
+    return templates.upload_page()
+
+
+@app.post("/upload", response_model=None)
+async def upload(
+    file: UploadFile = File(...),
+    merchant: str = Form(...),
+    batch_name: str = Form(""),
+    attest: str = Form(""),
+    phone_column: str = Form(""),
+    failure_type: str = Form(""),
+):
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD:
+        raise HTTPException(413, "file too large (max 5 MB)")
+    attested = attest in ("on", "true", "1", "yes")
+
+    mapping = {"phone": phone_column} if phone_column else None
+    result = intake_parse.parse_sheet(
+        data, file.filename or "upload.csv",
+        mapping=mapping, default_failure_type=(failure_type or None),
+    )
+
+    if not result.valid_rows or not attested:
+        return HTMLResponse(templates.upload_preview_page(
+            result, merchant=merchant, batch_name=batch_name,
+            filename=file.filename or "", attested=attested,
+            failure_type=failure_type,
+        ))
+
+    intake_store.init_schema()
+    with db.get_conn() as conn:
+        batch_id = intake_store.create_batch(
+            conn, name=batch_name or (file.filename or "batch"),
+            merchant=merchant, source_filename=file.filename or "",
+            attested=True,
+            attested_text=("Uploader attested these are the merchant's own "
+                           "customers with a transaction relationship and consent."),
+            rows=result.valid_rows,
+            config={"call_window": [9, 19], "max_voice_attempts": 2},
+        )
+    return RedirectResponse(f"/batch/{batch_id}", status_code=303)
+
+
+_PROCS: dict[str, subprocess.Popen] = {}
+
+
+def _proc_alive(batch_id: str) -> bool:
+    p = _PROCS.get(batch_id)
+    return p is not None and p.poll() is None
+
+
+@app.post("/batch/{batch_id}/run")
+def batch_run(batch_id: str, now: str | None = Query(None)) -> RedirectResponse:
+    with db.get_conn() as conn:
+        batch = intake_store.get_batch(conn, batch_id)
+    if not batch:
+        raise HTTPException(404, "unknown batch")
+    if not batch["attested"]:
+        raise HTTPException(403, "batch not attested")
+    if batch["status"] == "running" or _proc_alive(batch_id):
+        return RedirectResponse(f"/batch/{batch_id}", status_code=303)
+
+    # Run as a subprocess: LiveKit plugins must register on a process main
+    # thread, which a uvicorn worker thread is not.
+    cmd = [sys.executable, "-m", "intake.run_batch", batch_id]
+    if now:
+        cmd += ["--now", now]
+    _PROCS[batch_id] = subprocess.Popen(cmd, cwd=str(_REPO_ROOT))
+    return RedirectResponse(f"/batch/{batch_id}", status_code=303)
+
+
+@app.get("/batch/{batch_id}", response_class=HTMLResponse)
+def batch_page(batch_id: str) -> str:
+    with db.get_conn() as conn:
+        batch = intake_store.get_batch(conn, batch_id)
+        if not batch:
+            raise HTTPException(404, "unknown batch")
+        rows = intake_store.batch_rows(conn, batch_id)
+        progress = intake_store.batch_progress(conn, batch_id)
+    return templates.batch_page(batch, rows, progress, running=_proc_alive(batch_id))
+
+
+@app.get("/batch/{batch_id}/progress")
+def batch_progress_json(batch_id: str) -> dict:
+    with db.get_conn() as conn:
+        batch = intake_store.get_batch(conn, batch_id)
+        if not batch:
+            raise HTTPException(404, "unknown batch")
+        p = intake_store.batch_progress(conn, batch_id)
+    p["status"] = batch["status"]
+    p["running"] = _proc_alive(batch_id)
+    return p
+
+
+@app.get("/batch/{batch_id}/stream")
+async def batch_stream(batch_id: str) -> StreamingResponse:
+    async def gen():
+        while True:
+            with db.get_conn() as conn:
+                batch = intake_store.get_batch(conn, batch_id)
+                if not batch:
+                    yield "event: error\ndata: unknown batch\n\n"
+                    return
+                p = intake_store.batch_progress(conn, batch_id)
+            p["status"] = batch["status"]
+            yield f"data: {json.dumps(p)}\n\n"
+            if batch["status"] in ("done", "failed") and not _proc_alive(batch_id):
+                return
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/batch/{batch_id}/export.csv")
+def batch_export_csv(batch_id: str) -> StreamingResponse:
+    with db.get_conn() as conn:
+        if not intake_store.get_batch(conn, batch_id):
+            raise HTTPException(404, "unknown batch")
+        rows = intake_store.batch_rows(conn, batch_id)
+        lifecycles = compute.reconstruct(_rows(batch=batch_id))
+
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["row", "event_id", "customer_name", "phone", "amount_inr",
+                "failure_type", "reference_id", "decided_intervention",
+                "status", "result", "recovered_amount_inr", "error"])
+    for r in rows:
+        lc = lifecycles.get(r["event_id"])
+        w.writerow([
+            r["row_index"], r["event_id"], r["customer_name"], r["phone"],
+            r["amount_inr"], r["failure_type"], r["reference_id"],
+            r["decided_intervention"] or "", r["status"], r["result"] or "",
+            lc.recovered_amount_inr if lc else 0, r["error"] or "",
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{batch_id}.csv"'},
+    )
+
+
+@app.get("/batch/{batch_id}/export.json")
+def batch_export_json(batch_id: str) -> dict:
+    with db.get_conn() as conn:
+        batch = intake_store.get_batch(conn, batch_id)
+        if not batch:
+            raise HTTPException(404, "unknown batch")
+        rows = intake_store.batch_rows(conn, batch_id)
+        lifecycles = compute.reconstruct(_rows(batch=batch_id))
+    batch = dict(batch)
+    batch["created_at"] = str(batch["created_at"])
+    out_rows = []
+    for r in rows:
+        lc = lifecycles.get(r["event_id"])
+        out_rows.append({
+            "row_index": r["row_index"], "event_id": r["event_id"],
+            "customer_name": r["customer_name"], "phone": r["phone"],
+            "amount_inr": r["amount_inr"], "failure_type": r["failure_type"],
+            "reference_id": r["reference_id"],
+            "decided_intervention": r["decided_intervention"],
+            "status": r["status"], "result": r["result"], "error": r["error"],
+            "recovered_amount_inr": lc.recovered_amount_inr if lc else 0,
+            "transcript": lc.transcript if lc else [],
+        })
+    return {"batch": batch, "rows": out_rows}
+
+
+@app.get("/batches", response_class=HTMLResponse)
+def batches_page() -> str:
+    intake_store.init_schema()
+    with db.get_conn() as conn:
+        items = intake_store.list_batches(conn)
+    return templates.batches_page(items)
 
 
 def _bucket(b) -> dict:

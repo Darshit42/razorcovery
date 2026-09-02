@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -23,10 +24,29 @@ def database_url() -> str:
     return url
 
 
+_CONNECT_RETRIES = 6
+_CONNECT_BACKOFF_S = 1.0
+
+
+def _connect():
+    """psycopg.connect with a retry — RDS DNS resolution / TLS handshakes
+    flake transiently on some networks and we don't want a whole batch to
+    die for it."""
+    last: Exception | None = None
+    for attempt in range(_CONNECT_RETRIES):
+        try:
+            return psycopg.connect(database_url(), connect_timeout=10)
+        except psycopg.OperationalError as exc:
+            last = exc
+            if attempt < _CONNECT_RETRIES - 1:
+                time.sleep(_CONNECT_BACKOFF_S * (attempt + 1))
+    raise last  # type: ignore[misc]
+
+
 @contextmanager
 def get_conn():
     """Yield a psycopg connection; commit on success, rollback on error."""
-    conn = psycopg.connect(database_url())
+    conn = _connect()
     try:
         yield conn
         conn.commit()

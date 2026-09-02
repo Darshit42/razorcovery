@@ -11,7 +11,9 @@ livekit-agents>=1.0
 livekit-plugins-google>=1.0
 livekit-plugins-silero>=1.0   # VAD for the fallback STT->LLM->TTS path
 
-# Metrics view (read-only FastAPI + one HTML page).
+# Metrics view + intake workflow (FastAPI, upload, batch runner).
 fastapi>=0.115
 uvicorn>=0.34
-httpx>=0.28                   # TestClient in tests/test_metrics_app.py
+httpx>=0.28                   # TestClient in tests
+python-multipart>=0.0.9      # file upload
+openpyxl>=3.1                # .xlsx intake
