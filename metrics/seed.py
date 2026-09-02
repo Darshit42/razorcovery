@@ -172,12 +172,18 @@ def run_real_calls(conn, events, routed, n: int | None, *, retries: int = 1) -> 
     first n). Failures are logged honestly as result='failed' — never
     silently replaced with a fake success."""
     import asyncio
+    import logging
 
     from livekit.agents import AgentSession
     from livekit.plugins import google
 
     from voice.flow import RecoveryAgent
     from voice.outcome import write_call_audit
+
+    # LiveKit logs a full traceback for every transient LLM retry even when
+    # the retry then succeeds. Silence it; we report our own progress.
+    for name in ("livekit", "livekit.agents", "google_genai", "google.genai"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
 
     voice_events = [e for e in events if routed[e.event_id].intervention == "voice"]
     if n is not None:
@@ -215,6 +221,7 @@ def run_real_calls(conn, events, routed, n: int | None, *, retries: int = 1) -> 
 
     async def runner():
         done, failed = set(), set()
+        total = len(voice_events)
         for i, ev in enumerate(voice_events):
             persona = PERSONAS[i % len(PERSONAS)]
             outcome = None
@@ -239,6 +246,16 @@ def run_real_calls(conn, events, routed, n: int | None, *, retries: int = 1) -> 
                 failed.add(ev.event_id)
             _write(ev, outcome)
             done.add(ev.event_id)
+            print(f"  [{i + 1}/{total}] {ev.event_id}: {outcome.result}", flush=True)
+
+            # Bail early if the API is clearly unavailable rather than
+            # grinding through dozens of failures and committing garbage.
+            if len(failed) >= 5 and len(failed) == len(done):
+                raise SystemExit(
+                    f"aborting: first {len(failed)} calls all failed "
+                    "(Gemini quota / API unavailable). Nothing committed. "
+                    "Try again later or use --simulate."
+                )
         if failed:
             print(f"  {len(failed)} calls errored and are logged result=failed: {sorted(failed)}")
         return done

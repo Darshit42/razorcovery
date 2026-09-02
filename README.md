@@ -46,8 +46,12 @@ python -m voice.agent dev                            # local worker
 Metrics view (needs GOOGLE_API_KEY for `--real`; DATABASE_URL always):
 
 ```bash
-python -m metrics.seed --reset --real-batch          # real Gemini agent for every voice event
-# or: python -m metrics.seed --reset --simulate      # fast, seeded estimates, no API calls
+python -m metrics.seed --reset --simulate            # fast, seeded estimates, no API calls
+# real Gemini agent for every voice event (needs Gemini quota headroom;
+# an AI Studio free key will rate-limit under a full batch):
+# python -m metrics.seed --reset --real-batch
+# top up real transcripts a few at a time:
+# python -m metrics.seed --append-real 5
 uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
 ```
 
