@@ -3,17 +3,21 @@
 The decision layer only logs event -> decision. This adds the
 action/outcome rows.
 
-    python -m metrics.seed --reset --real-batch   # run the real Gemini agent
-                                                  # for every voice event
-    python -m metrics.seed --reset --simulate     # seeded probability model
-                                                  # (fast, no API calls)
+    python -m metrics.seed --reset --real-batch   # fresh random batch +
+                                                  # real Gemini agent per call
+    python -m metrics.seed --reset --simulate     # fresh batch + fast estimates
     python -m metrics.seed --append-real 5        # top up real transcripts
 
+Every `--reset` regenerates `data/fixtures/events.json` with a random
+seed and a random count (45-75) so each run is a genuinely different
+dataset — different customers, amounts, failure mix. `--keep-events`
+reuses the current fixture; `--gen-seed N` / `--count N` pin it.
+
 `--real-batch` runs the actual Gemini agent (scripted synthetic
-customers, no live telephony) for every non-blocked voice event. SMS and
-link_only interventions have no real delivery channel yet, so they get
-NO outcome row and show as "sent, unconfirmed" in the metrics view.
-`--simulate` is the old estimate model, kept for a fast demo.
+customers, no live telephony) for every non-blocked voice event and
+records real token usage. SMS and link_only interventions have no real
+delivery channel yet, so they get NO outcome row and show as
+"unconfirmed". `--simulate` is the fast estimate model.
 """
 from __future__ import annotations
 
@@ -23,9 +27,18 @@ from datetime import datetime, timezone
 
 from audit import db
 from audit.log import append_event
-from data.generate_events import load_events
+from data.generate_events import FIXTURE_PATH, generate_events, load_events, write_fixture
 from decision.pipeline import bind_sink, process_event
 from decision.rules import route
+
+
+def regenerate_fixture(gen_seed: int | None, count: int | None) -> tuple[int, int]:
+    """Build a fresh synthetic batch so every run is a different dataset.
+    Returns (seed, count) actually used."""
+    seed = random.randrange(1_000_000) if gen_seed is None else gen_seed
+    n = random.randint(45, 75) if count is None else count
+    write_fixture(generate_events(count=n, seed=seed))
+    return seed, n
 
 # Seeded outcome model. Probabilities are deliberately conservative and
 # documented; they are demo estimates, not measured rates.
@@ -107,9 +120,13 @@ def simulate_outcomes(conn, events, routed, seed: int, skip: set[str]) -> None:
         d = routed[e.event_id]
         if d.intervention == "none":
             continue
+        ptok = ctok = 0
         if d.intervention == "voice":
             result = _pick(rng, VOICE_OUTCOMES)
             duration = 0.0 if result == "no_answer" else rng.uniform(35, 175)
+            if result != "no_answer":
+                # rough shape of a real 3-5 turn Gemini conversation
+                ptok, ctok = rng.randint(2500, 8000), rng.randint(300, 1100)
         elif d.intervention == "sms":
             result, duration = _pick(rng, SMS_OUTCOMES), 0.0
         else:
@@ -145,6 +162,8 @@ def simulate_outcomes(conn, events, routed, seed: int, skip: set[str]) -> None:
                     f"https://pay.example-test.in/retry/{e.event_id}" if result == "recovered" else None
                 ),
                 "transcript": _TRANSCRIPTS.get(result, []) if d.intervention == "voice" else [],
+                "prompt_tokens": ptok,
+                "completion_tokens": ctok,
                 "transcript_source": "simulated",
                 "ended_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -189,10 +208,21 @@ def run_real_calls(conn, events, routed, n: int | None, *, retries: int = 1) -> 
     if n is not None:
         voice_events = voice_events[:n]
 
+    from livekit.agents.metrics import UsageCollector
+
     async def one(event, persona):
         agent = RecoveryAgent(event, attempt_number=routed[event.event_id].attempt_number or 1,
                               merchant="ChaiPoint")
         session = AgentSession(llm=google.LLM(model="gemini-2.5-flash"))
+        usage = UsageCollector()
+
+        @session.on("metrics_collected")
+        def _m(ev):
+            try:
+                usage.collect(ev.metrics)
+            except Exception:
+                pass
+
         await session.start(agent=agent)
         for line in persona:
             agent.record_turn("user", line)
@@ -206,6 +236,9 @@ def run_real_calls(conn, events, routed, n: int | None, *, retries: int = 1) -> 
             if agent.outcome.result in ("recovered", "refused", "wrong_number"):
                 break
         await session.aclose()
+        summ = usage.get_summary()
+        agent.outcome.prompt_tokens = getattr(summ, "llm_prompt_tokens", 0)
+        agent.outcome.completion_tokens = getattr(summ, "llm_completion_tokens", 0)
         agent.outcome.transcript_source = "real"
         return agent.outcome
 
@@ -296,10 +329,23 @@ def main() -> None:
     ap.add_argument("--append-real", type=int, default=0, dest="append_real",
                     help="add real Gemini calls for up to N voice events not yet "
                     "backed by a real call (no reset, no re-run)")
+    ap.add_argument("--keep-events", action="store_true", dest="keep_events",
+                    help="reuse the existing fixture instead of regenerating a "
+                    "fresh random batch on --reset")
+    ap.add_argument("--gen-seed", type=int, default=None, dest="gen_seed",
+                    help="pin the synthetic-data seed (default: random each run)")
+    ap.add_argument("--count", type=int, default=None,
+                    help="number of synthetic events (default: random 45-75)")
     ap.add_argument("--now", default="2026-09-02T12:00:00+05:30")
     args = ap.parse_args()
 
     now = datetime.fromisoformat(args.now)
+
+    # A fresh --reset means a fresh dataset, unless told otherwise.
+    if args.reset and not args.keep_events:
+        gseed, gcount = regenerate_fixture(args.gen_seed, args.count)
+        print(f"generated {gcount} events (gen-seed {gseed})")
+
     events = load_events()
     by_id = {e.event_id: e for e in events}
 

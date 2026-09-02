@@ -15,7 +15,8 @@ def row(event_id, entry_type, **kw):
     return base
 
 
-def recovered_voice(eid, amount, ft="payment_retry", dur=60.0, source="simulated"):
+def recovered_voice(eid, amount, ft="payment_retry", dur=60.0, source="simulated",
+                    ptok=1000, ctok=200):
     return [
         row(eid, "event_ingested", failure_type=ft, amount_inr=amount),
         row(eid, "decision", failure_type=ft, intervention="voice",
@@ -25,6 +26,7 @@ def recovered_voice(eid, amount, ft="payment_retry", dur=60.0, source="simulated
             reason="call ended: recovered",
             payload={"result": "recovered", "duration_s": dur,
                      "retry_link_url": "https://x", "transcript": [{"role": "user", "text": "ok"}],
+                     "prompt_tokens": ptok, "completion_tokens": ctok,
                      "transcript_source": source}),
     ]
 
@@ -107,9 +109,15 @@ def test_effort_per_recovery_math():
     assert e.total_attempts == 2
     assert e.total_call_minutes == 3.0        # (120 + 60)/60
     assert e.call_minutes_per_recovery == 1.5
-    # cost: 180s voice = 3 min * 4.0 = 12.0 ; sms 1 * 0.20 = 0.20
-    assert e.total_cost_inr == 12.2
-    assert e.cost_per_recovery_inr == 6.1
+    # two recovered_voice: 2*1000 prompt, 2*200 completion tokens
+    assert e.prompt_tokens == 2000
+    assert e.completion_tokens == 400
+    assert e.tokens_per_recovery == 1200
+    # LLM cost = 2000/1e6*0.30 + 400/1e6*2.50 USD, * 88 INR
+    from metrics import cost
+    assert e.llm_cost_inr == cost.llm_cost_inr(2000, 400)
+    assert e.telephony_cost_inr == 0.0        # no provider
+    assert e.total_cost_inr == e.llm_cost_inr
 
 
 def test_exceptions_lists_every_non_recovered_with_reason():

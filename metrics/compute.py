@@ -31,6 +31,8 @@ class EventLifecycle:
     retry_link_url: str | None = None
     transcript: list[dict[str, str]] = field(default_factory=list)
     transcript_source: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     first_ts: Any = None          # datetime of the event_ingested row
     timeline: list[dict[str, Any]] = field(default_factory=list)
 
@@ -91,6 +93,8 @@ def reconstruct(rows: list[dict[str, Any]]) -> dict[str, EventLifecycle]:
             if payload.get("transcript"):
                 lc.transcript = payload["transcript"]
             lc.transcript_source = payload.get("transcript_source", lc.transcript_source)
+            lc.prompt_tokens += int(payload.get("prompt_tokens") or 0)
+            lc.completion_tokens += int(payload.get("completion_tokens") or 0)
             if payload.get("result") in RECOVERED_RESULTS and lc.amount_inr:
                 lc.recovered_amount_inr = lc.amount_inr
     return out
@@ -148,9 +152,16 @@ class Effort:
     recovered: int
     total_attempts: int
     total_call_minutes: float
-    total_cost_inr: float
+    prompt_tokens: int
+    completion_tokens: int
+    llm_cost_inr: float
+    telephony_cost_inr: float
     sms_sent: int
     links_only: int
+
+    @property
+    def total_cost_inr(self) -> float:
+        return round(self.llm_cost_inr + self.telephony_cost_inr, 4)
 
     @property
     def attempts_per_recovery(self) -> float:
@@ -162,7 +173,12 @@ class Effort:
 
     @property
     def cost_per_recovery_inr(self) -> float:
-        return round(self.total_cost_inr / self.recovered, 2) if self.recovered else 0.0
+        return round(self.total_cost_inr / self.recovered, 4) if self.recovered else 0.0
+
+    @property
+    def tokens_per_recovery(self) -> int:
+        tot = self.prompt_tokens + self.completion_tokens
+        return round(tot / self.recovered) if self.recovered else 0
 
 
 def effort_per_recovery(lifecycles) -> Effort:
@@ -170,14 +186,18 @@ def effort_per_recovery(lifecycles) -> Effort:
     recovered = sum(1 for lc in lifecycles if lc.recovered)
     attempts = sum(lc.attempts for lc in lifecycles)
     call_seconds = sum(lc.call_seconds for lc in lifecycles)
+    prompt_tok = sum(lc.prompt_tokens for lc in lifecycles)
+    completion_tok = sum(lc.completion_tokens for lc in lifecycles)
     sms = sum(1 for lc in lifecycles if lc.decided_intervention == "sms")
     links = sum(1 for lc in lifecycles if lc.decided_intervention == "link_only")
-    total_cost = cost.voice_cost(call_seconds) + cost.sms_cost(sms)
     return Effort(
         recovered=recovered,
         total_attempts=attempts,
         total_call_minutes=round(call_seconds / 60.0, 2),
-        total_cost_inr=round(total_cost, 2),
+        prompt_tokens=prompt_tok,
+        completion_tokens=completion_tok,
+        llm_cost_inr=cost.llm_cost_inr(prompt_tok, completion_tok),
+        telephony_cost_inr=cost.telephony_cost_inr(call_seconds),
         sms_sent=sms,
         links_only=links,
     )

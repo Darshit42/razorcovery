@@ -11,5 +11,6 @@ venv/
 .pytest_cache/
 *.egg-info/
 
-# generated artifacts (events.json is seeded/reproducible but kept in-repo for review)
+# generated artifacts
+data/fixtures/events.json
 exports/

@@ -55,9 +55,16 @@ python -m metrics.seed --reset --simulate            # fast, seeded estimates, n
 uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
 ```
 
+Every `--reset` regenerates the synthetic batch with a random seed and a
+random count (45-75) — different customers, amounts and failure mix each
+run. `--keep-events` reuses the current fixture; `--gen-seed N` / `--count N`
+pin it. `data/fixtures/events.json` is a generated artifact (gitignored);
+`python -m data.generate_events` writes a deterministic seed-42 batch.
+
 The dashboard filters by failure type, intervention, status and date range
-(`/?failure_type=payment_retry&status=recovered`); the same params work on
-the JSON endpoints.
+(`/?failure_type=payment_retry&status=recovered`); same params on the JSON
+endpoints. LLM cost is real token usage (LiveKit UsageCollector) priced at
+Gemini 2.5 Flash list price; telephony is ₹0 until a provider is chosen.
 
 ## Layout
 

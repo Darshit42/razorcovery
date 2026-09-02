@@ -100,7 +100,11 @@ def write_fixture(events: list[FailureEvent], path: Path = FIXTURE_PATH) -> Path
 
 
 def load_events(path: Path = FIXTURE_PATH) -> list[FailureEvent]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    path = Path(path)
+    if not path.exists():
+        # first run on a fresh checkout — generate a default batch
+        write_fixture(generate_events(), path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
     return [FailureEvent.model_validate(r) for r in raw]
 
 

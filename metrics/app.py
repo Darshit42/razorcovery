@@ -155,9 +155,11 @@ def _bucket(b) -> dict:
 
 def _effort(e) -> dict:
     return dataclasses.asdict(e) | {
+        "total_cost_inr": e.total_cost_inr,
         "attempts_per_recovery": e.attempts_per_recovery,
         "call_minutes_per_recovery": e.call_minutes_per_recovery,
         "cost_per_recovery_inr": e.cost_per_recovery_inr,
+        "tokens_per_recovery": e.tokens_per_recovery,
     }
 
 

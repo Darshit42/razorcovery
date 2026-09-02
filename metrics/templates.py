@@ -338,8 +338,8 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
                    f"{s.recovered} of {s.contacted} contacted")
         + _stat_card("rupee", "emerald", "₹ recovered", _rupees(s.amount_recovered_inr),
                      f"of {_rupees(s.amount_at_risk_inr)} at risk")
-        + _stat_card("spark", "violet", "cost / recovery", f"₹{eff.cost_per_recovery_inr:.2f}",
-                     f"{eff.attempts_per_recovery} attempts each")
+        + _stat_card("spark", "violet", "LLM cost / recovery", f"₹{eff.cost_per_recovery_inr:.4f}",
+                     f"{eff.tokens_per_recovery:,} tokens each")
         + _stat_card("alert", "rose", "exceptions", str(s.exception_count),
                      "events not recovered")
     )
@@ -359,19 +359,20 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
         ["recovered payments", str(eff.recovered)],
         ["call attempts (total)", str(eff.total_attempts)],
         ["attempts / recovery", str(eff.attempts_per_recovery)],
-        ["call minutes (total)", str(eff.total_call_minutes)],
-        ["call minutes / recovery", str(eff.call_minutes_per_recovery)],
+        ["LLM tokens — prompt / completion",
+         f"{eff.prompt_tokens:,} / {eff.completion_tokens:,}"],
+        ["tokens / recovery", f"{eff.tokens_per_recovery:,}"],
+        ["LLM cost (Gemini list price)", f"₹{eff.llm_cost_inr:.4f}"],
+        ["telephony cost", "₹0 — no provider selected"],
         ["SMS sent · links only", f"{eff.sms_sent} · {eff.links_only}"],
-        ["total spend", f"₹{eff.total_cost_inr:.2f}"],
-        ["cost / recovery", f"₹{eff.cost_per_recovery_inr:.2f}"],
+        ["total spend", f"₹{eff.total_cost_inr:.4f}"],
+        ["cost / recovery", f"₹{eff.cost_per_recovery_inr:.4f}"],
     ]
     effort = _panel(
         "effort", "Cost / effort per recovery",
         _table([("", "l"), ("", "r")], [[f"<span class='text-slate-500'>{_e(a)}</span>", b]
                                         for a, b in effort_rows])
         + f"<p class='mt-3 text-xs text-slate-400'>{_e(cost.RATE_NOTE)}</p>",
-        "call time is the agent's model latency (text mode); real telephony "
-        "minutes and per-minute cost land with the Day-3 pilot",
     )
 
     if s.stopping_rule_counts:

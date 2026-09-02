@@ -35,6 +35,9 @@ class CallOutcome:
     refusal_captured: bool = False
     transcript: list[dict[str, str]] = field(default_factory=list)
     error: str | None = None
+    # real LLM token usage for this call (from LiveKit's UsageCollector)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 def write_call_audit(sink, event: FailureEvent, outcome: CallOutcome) -> None:
@@ -81,6 +84,8 @@ def write_call_audit(sink, event: FailureEvent, outcome: CallOutcome) -> None:
             "retry_link_url": outcome.retry_link_url,
             "error": outcome.error,
             "transcript": outcome.transcript,
+            "prompt_tokens": outcome.prompt_tokens,
+            "completion_tokens": outcome.completion_tokens,
             "ended_at": datetime.now(timezone.utc).isoformat(),
         },
     )
