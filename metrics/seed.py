@@ -1,15 +1,19 @@
 """Make the audit trail demo-ready.
 
-The decision layer only logs event -> decision. Real call outcomes come
-from the voice agent (and, on Day 3, the real pilot). Until then this
-seeds *simulated* action/outcome rows so the metrics view has something
-to show. Every simulated outcome is marked `transcript_source:
-"simulated"` and the metrics page carries a banner saying so.
+The decision layer only logs event -> decision. This adds the
+action/outcome rows.
 
-    python -m metrics.seed --reset            # wipe, re-run batch, simulate all
-    python -m metrics.seed --reset --real 6   # ...and run real Gemini for 6 calls
+    python -m metrics.seed --reset --real-batch   # run the real Gemini agent
+                                                  # for every voice event
+    python -m metrics.seed --reset --simulate     # seeded probability model
+                                                  # (fast, no API calls)
+    python -m metrics.seed --append-real 5        # top up real transcripts
 
-`--real N` produces genuine transcripts for N voice-routed events.
+`--real-batch` runs the actual Gemini agent (scripted synthetic
+customers, no live telephony) for every non-blocked voice event. SMS and
+link_only interventions have no real delivery channel yet, so they get
+NO outcome row and show as "sent, unconfirmed" in the metrics view.
+`--simulate` is the old estimate model, kept for a fast demo.
 """
 from __future__ import annotations
 
@@ -147,8 +151,26 @@ def simulate_outcomes(conn, events, routed, seed: int, skip: set[str]) -> None:
         )
 
 
-def run_real_calls(conn, events, routed, n: int) -> set[str]:
-    """Run the actual Gemini agent headless for up to n voice events."""
+# Scripted synthetic customers. Rotated across the voice batch so the
+# real conversations cover the range the agent must handle.
+PERSONAS = [
+    ["Hello?", "Haan main hi bol raha hoon", "Achha, kya hua tha?",
+     "Theek hai link bhej do, abhi kar deta hoon", "Thanks"],
+    ["Haan boliye", "Abhi thoda busy hoon, thodi der baad karta hoon", "Ok bye"],
+    ["Hello", "Mujhe interest nahi hai, aur dobara call mat kijiye", "Bye"],
+    ["Haan?", "Kaunsa payment? Mujhe yaad nahi aa raha", "Achha theek hai, link bhej do", "ok"],
+    ["Hi", "Maine to already pay kar diya tha kal", "Achha, dobara check karta hoon. Bye"],
+    ["Kaun bol raha hai?", "Ye number kisi aur ka tha shayad", "Nahi main wo nahi hoon"],
+    ["Haan bataiye", "Amount thoda zyada lag raha hai, sure ho?",
+     "Theek hai agar aisa hai to link bhej dijiye", "ok thanks"],
+    ["Hello ji", "Card decline kyun hua?", "Achha samajh gaya, link SMS kar do", "ok done"],
+]
+
+
+def run_real_calls(conn, events, routed, n: int | None, *, retries: int = 1) -> set[str]:
+    """Run the actual Gemini agent headless for voice events (all, or the
+    first n). Failures are logged honestly as result='failed' — never
+    silently replaced with a fake success."""
     import asyncio
 
     from livekit.agents import AgentSession
@@ -157,21 +179,16 @@ def run_real_calls(conn, events, routed, n: int) -> set[str]:
     from voice.flow import RecoveryAgent
     from voice.outcome import write_call_audit
 
-    voice_events = [e for e in events if routed[e.event_id].intervention == "voice"][:n]
-    scripts = [
-        ["Hello?", "Haan main hi bol raha hoon", "Achha, kya karna hoga?",
-         "Theek hai link bhej do", "Thanks"],
-        ["Haan boliye", "Abhi thoda busy hoon, baad mein karta hoon", "Ok bye"],
-        ["Hello", "Mujhe interest nahi, dobara call mat karna", "Bye"],
-        ["Haan?", "Kaunsa payment? Mujhe yaad nahi", "Achha theek hai link bhejo", "ok"],
-    ]
+    voice_events = [e for e in events if routed[e.event_id].intervention == "voice"]
+    if n is not None:
+        voice_events = voice_events[:n]
 
-    async def one(event, script):
+    async def one(event, persona):
         agent = RecoveryAgent(event, attempt_number=routed[event.event_id].attempt_number or 1,
                               merchant="ChaiPoint")
         session = AgentSession(llm=google.LLM(model="gemini-2.5-flash"))
         await session.start(agent=agent)
-        for line in script:
+        for line in persona:
             agent.record_turn("user", line)
             r = await session.run(user_input=line)
             say = " ".join(
@@ -184,8 +201,9 @@ def run_real_calls(conn, events, routed, n: int) -> set[str]:
                 break
         await session.aclose()
         agent.outcome.transcript_source = "real"
-        # tag the outcome payload source through write_call_audit
-        import functools
+        return agent.outcome
+
+    def _write(event, outcome):
         sink = _sink(conn)
 
         def tagged(**kw):
@@ -193,17 +211,36 @@ def run_real_calls(conn, events, routed, n: int) -> set[str]:
                 kw["payload"]["transcript_source"] = "real"
             return sink(**kw)
 
-        write_call_audit(tagged, event, agent.outcome)
-        return event.event_id
+        write_call_audit(tagged, event, outcome)
 
     async def runner():
-        done = set()
+        done, failed = set(), set()
         for i, ev in enumerate(voice_events):
-            try:
-                done.add(await one(ev, scripts[i % len(scripts)]))
-            except Exception as exc:  # Gemini can return empty completions
-                print(f"  real call {ev.event_id} failed ({type(exc).__name__}); "
-                      "falling back to simulated for this event")
+            persona = PERSONAS[i % len(PERSONAS)]
+            outcome = None
+            for attempt in range(retries + 1):
+                try:
+                    outcome = await one(ev, persona)
+                    break
+                except Exception as exc:
+                    last = exc
+                    if attempt < retries:
+                        await asyncio.sleep(2)
+            if outcome is None:
+                # honest failure — no silent fallback to a fake success
+                from voice.outcome import CallOutcome
+
+                outcome = CallOutcome(
+                    result="failed",
+                    attempt_number=routed[ev.event_id].attempt_number or 1,
+                    error=f"{type(last).__name__}: {last}"[:200],
+                )
+                outcome.transcript_source = "real"
+                failed.add(ev.event_id)
+            _write(ev, outcome)
+            done.add(ev.event_id)
+        if failed:
+            print(f"  {len(failed)} calls errored and are logged result=failed: {sorted(failed)}")
         return done
 
     return asyncio.run(runner())
@@ -233,10 +270,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--reset", action="store_true", help="TRUNCATE audit_log first")
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--real", type=int, default=0, help="run N real Gemini calls")
+    ap.add_argument("--real-batch", action="store_true", dest="real_batch",
+                    help="run the real Gemini agent for EVERY non-blocked voice event")
+    ap.add_argument("--simulate", action="store_true",
+                    help="use the seeded probability model instead of real calls")
+    ap.add_argument("--real", type=int, default=0,
+                    help="run the real agent for N voice events, simulate the rest")
     ap.add_argument("--append-real", type=int, default=0, dest="append_real",
-                    help="add N real Gemini calls for voice events that have no "
-                    "outcome yet (no reset, no re-simulation)")
+                    help="add real Gemini calls for up to N voice events not yet "
+                    "backed by a real call (no reset, no re-run)")
     ap.add_argument("--now", default="2026-09-02T12:00:00+05:30")
     args = ap.parse_args()
 
@@ -257,14 +299,21 @@ def main() -> None:
         if args.reset:
             reset(conn)
         routed = run_decisions(conn, events, now)
-        real_ids: set[str] = set()
-        if args.real:
-            real_ids = run_real_calls(conn, events, routed, args.real)
-        simulate_outcomes(conn, events, routed, args.seed, skip=real_ids)
 
-    print(f"seeded {len(events)} events "
-          f"({len(real_ids)} real calls, rest simulated). "
-          f"reset={args.reset}")
+        if args.simulate:
+            simulate_outcomes(conn, events, routed, args.seed, skip=set())
+            print(f"seeded {len(events)} events (all outcomes SIMULATED). reset={args.reset}")
+            return
+
+        # default + --real-batch + --real N: real Gemini for voice,
+        # nothing fabricated for SMS/link.
+        n = args.real or None
+        real_ids = run_real_calls(conn, events, routed, n, retries=2)
+        if args.real:  # simulate only the voice events we didn't really call
+            simulate_outcomes(conn, events, routed, args.seed, skip=real_ids)
+        print(f"seeded {len(events)} events — {len(real_ids)} real voice calls; "
+              f"SMS/link left unconfirmed{'; rest simulated' if args.real else ''}. "
+              f"reset={args.reset}")
 
 
 if __name__ == "__main__":

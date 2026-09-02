@@ -129,3 +129,39 @@ def test_exceptions_lists_every_non_recovered_with_reason():
 def test_stopping_rule_counts():
     s = compute.summarise(dataset())
     assert s.stopping_rule_counts == {"explicit_refusal": 1}
+
+
+# --- filters --------------------------------------------------------------
+
+def _lcs():
+    return list(compute.reconstruct(dataset()).values())
+
+
+def test_filter_by_failure_type():
+    got = compute.filter_lifecycles(_lcs(), failure_type="payment_retry")
+    assert {lc.event_id for lc in got} == {"evt_a", "evt_b"}
+
+
+def test_filter_by_intervention():
+    got = compute.filter_lifecycles(_lcs(), intervention="sms")
+    assert {lc.event_id for lc in got} == {"evt_d"}
+
+
+def test_filter_by_status():
+    lcs = _lcs()
+    assert {lc.event_id for lc in compute.filter_lifecycles(lcs, status="recovered")} == {"evt_a", "evt_b"}
+    assert {lc.event_id for lc in compute.filter_lifecycles(lcs, status="blocked")} == {"evt_c"}
+    assert {lc.event_id for lc in compute.filter_lifecycles(lcs, status="open")} == {"evt_d"}
+
+
+def test_filters_compose():
+    got = compute.filter_lifecycles(_lcs(), failure_type="payment_retry", status="recovered")
+    assert {lc.event_id for lc in got} == {"evt_a", "evt_b"}
+
+
+def test_summarise_lifecycles_matches_summarise_on_subset():
+    lcs = compute.filter_lifecycles(_lcs(), failure_type="payment_retry")
+    s = compute.summarise_lifecycles(lcs)
+    assert s.total_events == 2
+    assert s.recovered == 2
+    assert s.amount_recovered_inr == 15000

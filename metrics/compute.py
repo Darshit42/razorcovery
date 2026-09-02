@@ -31,6 +31,7 @@ class EventLifecycle:
     retry_link_url: str | None = None
     transcript: list[dict[str, str]] = field(default_factory=list)
     transcript_source: str | None = None
+    first_ts: Any = None          # datetime of the event_ingested row
     timeline: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -55,6 +56,8 @@ def reconstruct(rows: list[dict[str, Any]]) -> dict[str, EventLifecycle]:
         eid = r["event_id"]
         lc = out.setdefault(eid, EventLifecycle(event_id=eid))
         lc.timeline.append(r)
+        if r.get("ts") and lc.first_ts is None:
+            lc.first_ts = r["ts"]
         if r["customer_id"] and not lc.customer_id:
             lc.customer_id = r["customer_id"]
         if r["failure_type"] and not lc.failure_type:
@@ -229,8 +232,48 @@ class Summary:
         return round(self.recovered / base, 4) if base else 0.0
 
 
+FAILURE_TYPES = ("payment_retry", "checkout_abandonment", "mandate_failure")
+INTERVENTIONS = ("voice", "sms", "link_only", "none")
+STATUSES = ("recovered", "blocked", "open")
+
+
+def filter_lifecycles(
+    lifecycles,
+    *,
+    failure_type: str | None = None,
+    intervention: str | None = None,
+    status: str | None = None,
+    since=None,
+    until=None,
+) -> list[EventLifecycle]:
+    """Subset lifecycles by the dashboard filter controls. `since`/`until`
+    are `date` objects compared against the event-ingest timestamp."""
+    out = []
+    for lc in lifecycles:
+        if failure_type and lc.failure_type != failure_type:
+            continue
+        if intervention and lc.decided_intervention != intervention:
+            continue
+        if status == "recovered" and not lc.recovered:
+            continue
+        if status == "blocked" and not lc.blocked:
+            continue
+        if status == "open" and (lc.recovered or lc.blocked):
+            continue
+        d = lc.first_ts.date() if lc.first_ts is not None else None
+        if since and (d is None or d < since):
+            continue
+        if until and (d is None or d > until):
+            continue
+        out.append(lc)
+    return out
+
+
 def summarise(rows: list[dict[str, Any]]) -> Summary:
-    lifecycles = list(reconstruct(rows).values())
+    return summarise_lifecycles(list(reconstruct(rows).values()))
+
+
+def summarise_lifecycles(lifecycles: list[EventLifecycle]) -> Summary:
     stop_counts: dict[str, int] = {}
     for lc in lifecycles:
         for s in lc.stopping_rules:

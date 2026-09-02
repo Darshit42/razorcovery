@@ -15,9 +15,10 @@ No auth, no write paths. Everything is derived from audit_log at request time.
 from __future__ import annotations
 
 import dataclasses
+from datetime import date
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from audit import db
@@ -39,14 +40,72 @@ def _has_simulated(lifecycles) -> bool:
     )
 
 
+def _parse_date(s: str | None) -> date | None:
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+class Filters:
+    """Query params shared by the HTML page and the JSON endpoints."""
+
+    def __init__(self, failure_type=None, intervention=None, status=None, since=None, until=None):
+        self.failure_type = failure_type if failure_type in compute.FAILURE_TYPES else None
+        self.intervention = intervention if intervention in compute.INTERVENTIONS else None
+        self.status = status if status in compute.STATUSES else None
+        self.since = _parse_date(since)
+        self.until = _parse_date(until)
+
+    def apply(self, lifecycles):
+        return compute.filter_lifecycles(
+            lifecycles,
+            failure_type=self.failure_type,
+            intervention=self.intervention,
+            status=self.status,
+            since=self.since,
+            until=self.until,
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "failure_type": self.failure_type or "",
+            "intervention": self.intervention or "",
+            "status": self.status or "",
+            "since": self.since.isoformat() if self.since else "",
+            "until": self.until.isoformat() if self.until else "",
+        }
+
+    @property
+    def active(self) -> bool:
+        return any(self.as_dict().values())
+
+
+def _filters(
+    failure_type: str | None = Query(None),
+    intervention: str | None = Query(None),
+    status: str | None = Query(None),
+    since: str | None = Query(None),
+    until: str | None = Query(None),
+) -> Filters:
+    return Filters(failure_type, intervention, status, since, until)
+
+
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index(f: Filters = Depends(_filters)) -> str:
     rows = _rows()
-    lifecycles = list(compute.reconstruct(rows).values())
-    summary = compute.summarise(rows)
-    exceptions = compute.exceptions(lifecycles)
+    all_lcs = list(compute.reconstruct(rows).values())
+    shown = f.apply(all_lcs)
     return templates.index_page(
-        summary, exceptions, lifecycles, has_simulated=_has_simulated(lifecycles)
+        compute.summarise_lifecycles(shown),
+        compute.exceptions(shown),
+        shown,
+        total_events=len(all_lcs),
+        filters=f.as_dict(),
+        filters_active=f.active,
+        has_simulated=_has_simulated(shown),
     )
 
 
@@ -57,9 +116,11 @@ def event_detail(event_id: str) -> str:
 
 
 @app.get("/api/summary")
-def api_summary() -> dict:
-    s = compute.summarise(_rows())
+def api_summary(f: Filters = Depends(_filters)) -> dict:
+    shown = f.apply(list(compute.reconstruct(_rows()).values()))
+    s = compute.summarise_lifecycles(shown)
     return dataclasses.asdict(s) | {
+        "filters": f.as_dict(),
         "recovery_rate": s.recovery_rate,
         "by_intervention": [_bucket(b) for b in s.by_intervention],
         "by_failure_type": [_bucket(b) for b in s.by_failure_type],
@@ -68,9 +129,9 @@ def api_summary() -> dict:
 
 
 @app.get("/api/exceptions")
-def api_exceptions() -> list[dict]:
-    lifecycles = list(compute.reconstruct(_rows()).values())
-    return compute.exceptions(lifecycles)
+def api_exceptions(f: Filters = Depends(_filters)) -> list[dict]:
+    shown = f.apply(list(compute.reconstruct(_rows()).values()))
+    return compute.exceptions(shown)
 
 
 @app.get("/api/event/{event_id}")

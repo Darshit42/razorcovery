@@ -46,10 +46,14 @@ python -m voice.agent dev                            # local worker
 Metrics view (needs GOOGLE_API_KEY for `--real`; DATABASE_URL always):
 
 ```bash
-python -m metrics.seed --reset --real 4              # populate outcomes
-python -m metrics.seed --append-real 5               # add real Gemini transcripts
+python -m metrics.seed --reset --real-batch          # real Gemini agent for every voice event
+# or: python -m metrics.seed --reset --simulate      # fast, seeded estimates, no API calls
 uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
 ```
+
+The dashboard filters by failure type, intervention, status and date range
+(`/?failure_type=payment_retry&status=recovered`); the same params work on
+the JSON endpoints.
 
 ## Layout
 
@@ -114,7 +118,10 @@ stat-card row, white content panels, empty states. Everything is computed from
   readable dialogue, tagged **real** (genuine Gemini) or **simulated**.
 - `GET /api/summary`, `/api/exceptions`, `/api/event/{id}` — same data as JSON.
 
-Batch call outcomes are seeded by `metrics/seed.py` (documented probability
-model) because real outcomes come from the Day-3 pilot; `--real N` runs the
-actual Gemini agent for N calls so several drill-downs show real transcripts.
-The page carries a banner making the simulated/real split explicit.
+`metrics/seed.py --real-batch` runs the actual Gemini agent (scripted synthetic
+customers, 8 personas, no live telephony) for every non-blocked voice event and
+logs real transcripts + tool-driven outcomes; Gemini failures are logged
+honestly as `result="failed"`, never faked. SMS / link interventions have no
+delivery channel yet, so they get no outcome and show as unconfirmed. `--simulate`
+keeps the old seeded probability model for a fast demo. The page banner states
+which mode produced the data.

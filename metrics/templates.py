@@ -258,21 +258,80 @@ _BUCKET_HEADERS = [
 ]
 
 
-def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecycle],
-               *, has_simulated: bool) -> str:
-    eff = s.effort
-
-    banner = ""
-    if has_simulated:
-        banner = (
-            "<div class='mb-8 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4'>"
-            f"<span class='mt-0.5 text-amber-500'>{_icon('alert', 'w-5 h-5')}</span>"
-            "<p class='text-sm text-amber-800'>Batch call outcomes are "
-            "<span class='font-semibold'>simulated</span> (seeded model in "
-            "<code class='rounded bg-amber-100 px-1'>metrics/seed.py</code>) pending the "
-            "Day-3 live pilot. Drill-downs tagged <span class='font-semibold'>real</span> "
-            "are genuine Gemini conversations.</p></div>"
+def _filter_bar(filters: dict, total: int, shown: int, active: bool) -> str:
+    def _select(name: str, label: str, options: list[str]) -> str:
+        cur = filters.get(name, "")
+        opts = f"<option value=''>All {_e(label)}</option>" + "".join(
+            f"<option value='{_e(o)}'{' selected' if o == cur else ''}>{_e(o)}</option>"
+            for o in options
         )
+        return (
+            f"<label class='flex flex-col gap-1 text-xs font-medium text-slate-500'>"
+            f"{_e(label)}"
+            f"<select name='{name}' class='rounded-lg border border-slate-200 bg-white "
+            f"px-3 py-1.5 text-sm text-slate-700'>{opts}</select></label>"
+        )
+
+    def _date(name: str, label: str) -> str:
+        return (
+            f"<label class='flex flex-col gap-1 text-xs font-medium text-slate-500'>{_e(label)}"
+            f"<input type='date' name='{name}' value='{_e(filters.get(name, ''))}' "
+            f"class='rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700'></label>"
+        )
+
+    from metrics.compute import FAILURE_TYPES, INTERVENTIONS, STATUSES
+
+    clear = (
+        "<a href='/' class='rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 "
+        "hover:text-slate-700'>Clear</a>" if active else ""
+    )
+    count = (
+        f"<p class='mt-3 text-xs text-slate-400'>Showing "
+        f"<span class='font-semibold text-slate-600'>{shown}</span> of {total} events</p>"
+    )
+    return (
+        "<form method='get' class='mb-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm'>"
+        "<div class='flex flex-wrap items-end gap-3'>"
+        f"{_select('failure_type', 'failure types', list(FAILURE_TYPES))}"
+        f"{_select('intervention', 'interventions', list(INTERVENTIONS))}"
+        f"{_select('status', 'statuses', list(STATUSES))}"
+        f"{_date('since', 'from')}"
+        f"{_date('until', 'to')}"
+        "<button type='submit' class='rounded-lg bg-brand-600 px-4 py-1.5 text-sm "
+        "font-medium text-white hover:bg-brand-700'>Apply</button>"
+        f"{clear}"
+        "</div>"
+        f"{count}</form>"
+    )
+
+
+def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecycle],
+               *, has_simulated: bool, total_events: int | None = None,
+               filters: dict | None = None, filters_active: bool = False) -> str:
+    eff = s.effort
+    total_events = s.total_events if total_events is None else total_events
+    filters = filters or {}
+
+    if has_simulated:
+        msg = (
+            "Some batch call outcomes are <span class='font-semibold'>simulated</span> "
+            "(seeded model in <code class='rounded bg-amber-100 px-1'>metrics/seed.py</code>). "
+            "Drill-downs tagged <span class='font-semibold'>real</span> are genuine Gemini "
+            "conversations. SMS / link interventions have no delivery channel yet and show as "
+            "unconfirmed."
+        )
+    else:
+        msg = (
+            "Voice outcomes are <span class='font-semibold'>real Gemini conversations</span> "
+            "with scripted synthetic customers (no live telephony yet). SMS / link "
+            "interventions have no delivery channel and show as unconfirmed. Real customer "
+            "calls land in the Day-3 pilot."
+        )
+    banner = (
+        "<div class='mb-8 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4'>"
+        f"<span class='mt-0.5 text-amber-500'>{_icon('alert', 'w-5 h-5')}</span>"
+        f"<p class='text-sm text-amber-800'>{msg}</p></div>"
+    )
 
     cards = (
         _stat_card("bars", "teal", "recovery rate", _pct(s.recovery_rate),
@@ -311,6 +370,8 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
         _table([("", "l"), ("", "r")], [[f"<span class='text-slate-500'>{_e(a)}</span>", b]
                                         for a, b in effort_rows])
         + f"<p class='mt-3 text-xs text-slate-400'>{_e(cost.RATE_NOTE)}</p>",
+        "call time is the agent's model latency (text mode); real telephony "
+        "minutes and per-minute cost land with the Day-3 pilot",
     )
 
     if s.stopping_rule_counts:
@@ -366,16 +427,27 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
         "<div class='mb-8'>"
         "<h1 class='text-2xl font-semibold text-slate-900'>Recovery metrics</h1>"
         f"<p class='mt-1 text-sm text-slate-500'>Computed entirely from the append-only "
-        f"audit trail — {s.total_events} events, {s.total_customers} customers.</p></div>"
+        f"audit trail — {s.total_events} of {total_events} events"
+        f"{', ' + str(s.total_customers) + ' customers' if s.total_events else ''}.</p></div>"
     )
 
-    return _shell(
-        "razorcovery — recovery metrics", "overview",
-        header + banner + overview
-        + "<div class='mt-8 space-y-8'>"
-        + by_int + by_ft + effort + stops + exc + all_events
-        + "</div>",
-    )
+    filter_bar = _filter_bar(filters, total_events, s.total_events, filters_active)
+
+    if s.total_events == 0:
+        body = header + filter_bar + _panel(
+            "overview", "No matching events",
+            _empty("list", "Nothing matches these filters",
+                   "Widen the date range or clear a filter."),
+        )
+    else:
+        body = (
+            header + filter_bar + banner + overview
+            + "<div class='mt-8 space-y-8'>"
+            + by_int + by_ft + effort + stops + exc + all_events
+            + "</div>"
+        )
+
+    return _shell("razorcovery — recovery metrics", "overview", body)
 
 
 def detail_page(lc: EventLifecycle | None) -> str:

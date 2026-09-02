@@ -42,6 +42,21 @@ def test_api_exceptions_is_list(client):
         assert {"event_id", "why", "blocked"} <= d[0].keys()
 
 
+def test_filters_narrow_the_result(client):
+    full = client.get("/api/summary").json()["total_events"]
+    filtered = client.get("/api/summary?failure_type=payment_retry").json()
+    assert filtered["filters"]["failure_type"] == "payment_retry"
+    assert filtered["total_events"] <= full
+    # bad value is ignored, not an error
+    assert client.get("/api/summary?failure_type=nonsense").status_code == 200
+
+
+def test_index_renders_filter_bar(client):
+    body = client.get("/").text
+    assert "name='failure_type'" in body and "name='since'" in body
+    assert "Showing" in body
+
+
 def test_event_detail_and_404(client):
     ids = [x["event_id"] for x in client.get("/api/exceptions").json()]
     if ids:
