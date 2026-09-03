@@ -118,12 +118,26 @@ are function tools (`send_retry_link`, `mark_do_not_contact`, `wrong_person`,
 logged tools do. The prompt forbids asking for card/CVV/OTP/UPI PIN and requires
 honouring a hard "don't contact me again" immediately.
 
-Telephony: `voice/dialer.py` has a real `LiveKitSipDialer` that dials via a
-LiveKit outbound SIP trunk (`CreateSIPParticipantRequest`). It activates when
-`LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `SIP_OUTBOUND_TRUNK_ID`
-are set in `.env` (trunk pointed at Twilio/Plivo/Exotel). Until then
-`UnconfiguredDialer` runs and each voice row uses `voice/headless.converse` —
-a real Gemini conversation with a scripted synthetic customer, no PSTN.
+Telephony: `voice/dialer.py` has a real `LiveKitSipDialer` and `voice/agent.py`
+rings the callee in with `create_sip_participant`. It activates when
+`LIVEKIT_*` + `SIP_OUTBOUND_TRUNK_ID` are set. Until then `UnconfiguredDialer`
+runs and each voice row uses `voice/headless.converse` — a real Gemini
+conversation with a scripted synthetic customer, no PSTN.
+
+Wiring it up (one-time):
+
+```bash
+# 1. register your SIP provider as a LiveKit outbound trunk
+python -m voice.setup_trunk --address <sip-host> --number +91XXXXXXXXXX \
+    --user <sip-user> --password <sip-pass>          # prints SIP_OUTBOUND_TRUNK_ID
+# 2. paste that + LIVEKIT_* into .env, then run the worker
+python -m voice.agent start
+# 3. test one call to a number you control
+python -m voice.testcall --to +9198XXXXXXXX --amount 2499
+```
+
+Once the worker is up, the intake batch runner dispatches real calls to it
+automatically for every voice-routed row.
 
 ## Merchant intake workflow
 

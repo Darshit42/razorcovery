@@ -16,9 +16,8 @@ from __future__ import annotations
 import os
 from typing import Protocol
 
-# SIP request tuning (mirrors production defaults).
+# How long to let the callee's phone ring before giving up.
 RINGING_TIMEOUT_S = 30
-DISPATCH_RETRIES = 2
 
 
 class Dialer(Protocol):
@@ -81,8 +80,12 @@ class LiveKitSipDialer:
 async def dial_sip_participant(ctx, *, phone: str, trunk_id: str,
                                caller_id: str | None = None) -> bool:
     """Called from inside the agent job: ring the callee into the room.
-    Returns True once answered, False if it could not connect."""
-    from livekit import api
+
+    Returns True once the callee answers, False if the call did not
+    connect (no answer / busy / declined / rejected number). Raises only
+    for a genuine config/transport problem worth surfacing.
+    """
+    from google.protobuf.duration_pb2 import Duration
     from livekit.protocol.sip import CreateSIPParticipantRequest
 
     req = CreateSIPParticipantRequest(
@@ -91,20 +94,23 @@ async def dial_sip_participant(ctx, *, phone: str, trunk_id: str,
         sip_call_to=phone,
         participant_identity=phone,
         wait_until_answered=True,
+        ringing_timeout=Duration(seconds=RINGING_TIMEOUT_S),
     )
     if caller_id:
         req.sip_number = caller_id
 
-    last_err: Exception | None = None
-    for attempt in range(1, DISPATCH_RETRIES + 2):
-        try:
-            await ctx.api.sip.create_sip_participant(req)
-            return True
-        except Exception as exc:  # TwirpError etc.
-            last_err = exc
-    if last_err:
-        raise last_err
-    return False
+    try:
+        await ctx.api.sip.create_sip_participant(req)
+        return True
+    except Exception as exc:
+        text = f"{type(exc).__name__}: {exc}".lower()
+        # expected "call didn't connect" outcomes -> False, not an error
+        for token in ("no answer", "busy", "declined", "rejected", "not found",
+                      "unavailable", "timeout", "canceled", "cancelled", "486",
+                      "480", "603", "404"):
+            if token in text:
+                return False
+        raise
 
 
 def from_env() -> Dialer:
