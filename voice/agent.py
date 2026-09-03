@@ -21,6 +21,11 @@ import os
 
 from dotenv import load_dotenv
 
+# Import LiveKit + the Google plugin at module level: plugins must register
+# on the process main thread, which happens here, not inside the job task.
+from livekit.agents import AgentSession, WorkerOptions, cli
+from livekit.plugins.google.beta import realtime
+
 from audit import db
 from audit.log import append_event
 from data.schemas import FailureEvent
@@ -50,9 +55,6 @@ def _parse_metadata(raw: str) -> tuple[FailureEvent, int, str, bool]:
 
 async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
     from datetime import datetime, timezone
-
-    from livekit.agents import AgentSession
-    from livekit.plugins.google.beta import realtime
 
     event, attempt_number, merchant, should_dial = _parse_metadata(ctx.job.metadata or "{}")
 
@@ -146,8 +148,6 @@ def _finalise(event: FailureEvent, agent: RecoveryAgent) -> None:
 
 
 def main() -> None:
-    from livekit.agents import WorkerOptions, cli
-
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=AGENT_NAME))
 
 
