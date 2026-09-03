@@ -190,6 +190,7 @@ def _table(headers: list[tuple[str, str]], rows: list[list[str]]) -> str:
 # --------------------------------------------------------------------------
 _PAGES = [
     ("/", "Dashboard", "grid"),
+    ("/calls", "Call logs", "phone"),
     ("/upload", "Upload sheet", "spark"),
     ("/batches", "Batches", "list"),
 ]
@@ -566,11 +567,21 @@ def detail_page(lc: EventLifecycle | None) -> str:
         f"{_badge(src, src) if lc.transcript else ''}</div>"
     )
 
+    recording = ""
+    if lc.recording_url:
+        recording = _panel(
+            "recording", "Call recording",
+            f"<audio controls preload='none' src='{_e(lc.recording_url)}' "
+            "class='w-full'></audio>"
+            f"<p class='mt-2 text-xs text-slate-400'>{_e(lc.recording_url)}</p>",
+        )
+
     body = (
         header
         + "<div class='space-y-8'>"
         + _panel("facts", "Event", facts_grid)
         + _panel("stops", "Stopping rules", stop_inner)
+        + recording
         + _panel("transcript", transcript_title, transcript_inner, transcript_cap)
         + _panel("timeline", "Full audit timeline", timeline_inner)
         + "</div>"
@@ -804,3 +815,62 @@ def batches_page(items: list[dict]) -> str:
                          ("created", "l")], rows))
     )
     return _shell("razorcovery — batches", "/batches", body)
+
+
+def calls_page(rows: list[dict], *, batch: str | None = None) -> str:
+    recovered = sum(1 for r in rows if r["recovered"])
+    total_min = round(sum(r["duration_s"] for r in rows) / 60, 1)
+    cost = sum(r["llm_cost_inr"] for r in rows)
+
+    scope = ""
+    if batch:
+        scope = (f" · batch <code class='rounded bg-slate-100 px-1'>{_e(batch)}</code>"
+                 f" <a href='/calls' class='text-brand-600 underline'>clear</a>")
+
+    if not rows:
+        body = ("<h1 class='text-2xl font-semibold text-slate-900'>Call logs</h1>"
+                + _empty("phone", "No calls yet",
+                         "Run a batch or `python -m voice.testcall` to place one."))
+        return _shell("razorcovery — call logs", "/calls", body)
+
+    def _row(r: dict) -> list[str]:
+        rec = (f"<a href='{_e(r['recording_url'])}' class='text-brand-700 hover:underline'>audio</a>"
+               if r["recording_url"] else "<span class='text-slate-300'>—</span>")
+        tr = ("<a href='/event/" + _e(r["event_id"]) + "' class='text-brand-700 hover:underline'>view</a>"
+              if r["has_transcript"] else
+              "<a href='/event/" + _e(r["event_id"]) + "' class='text-slate-400 hover:underline'>—</a>")
+        dur = f"{int(r['duration_s'] // 60)}:{int(r['duration_s'] % 60):02d}" if r["duration_s"] else "—"
+        return [
+            f"<span class='text-slate-500'>{_e((r['ts'] or '')[:16].replace('T', ' '))}</span>",
+            f"<span class='font-medium text-slate-800'>{_e(r['customer_name'] or '—')}</span>",
+            _e(r["phone"] or "—"),
+            _rupees(r["amount_inr"]),
+            dur,
+            _badge((r["result"] or "—").replace("_", " "),
+                   "recovered" if r["recovered"] else
+                   ("blocked" if r["result"] in ("failed", "refused") else "open")),
+            f"₹{r['llm_cost_inr']:.4f}",
+            rec, tr,
+        ]
+
+    cards = "".join(
+        f"<div class='rounded-2xl border border-slate-200 bg-white p-5 shadow-sm'>"
+        f"<p class='text-xs font-medium uppercase tracking-wide text-slate-400'>{_e(l)}</p>"
+        f"<p class='mt-1 text-2xl font-semibold text-slate-900 tabular-nums'>{v}</p></div>"
+        for l, v in [("calls", str(len(rows))), ("recovered", str(recovered)),
+                     ("talk-time (min)", str(total_min)), ("LLM cost", f"₹{cost:.4f}")]
+    )
+
+    table = _table(
+        [("when", "l"), ("customer", "l"), ("phone", "l"), ("₹", "r"),
+         ("duration", "l"), ("result", "l"), ("cost", "l"),
+         ("recording", "l"), ("transcript", "l")],
+        [_row(r) for r in rows],
+    )
+    body = (
+        f"<div class='mb-6'><h1 class='text-2xl font-semibold text-slate-900'>Call logs</h1>"
+        f"<p class='mt-1 text-sm text-slate-500'>every outbound voice call{scope}</p></div>"
+        f"<div class='mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4'>{cards}</div>"
+        + _panel("calls", "Calls", table)
+    )
+    return _shell("razorcovery — call logs", "/calls", body)

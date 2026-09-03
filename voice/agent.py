@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 # Import LiveKit + the Google plugin at module level: plugins must register
 # on the process main thread, which happens here, not inside the job task.
+from google.genai import types as genai_types
 from livekit.agents import AgentSession, WorkerOptions, cli
 from livekit.plugins.google.beta import realtime
 
@@ -34,6 +35,7 @@ from voice import config
 from voice.dialer import dial_sip_participant
 from voice.flow import RecoveryAgent
 from voice.outcome import write_call_audit
+from voice.recording import recording_url, start_recording, stop_recording
 
 load_dotenv()
 logger = logging.getLogger("voice.agent")
@@ -78,20 +80,31 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
         return
 
     await ctx.connect()
+    started_at = datetime.now(timezone.utc)
 
     agent = RecoveryAgent(event, attempt_number=attempt_number, merchant=merchant)
     model = realtime.RealtimeModel(
         model=config.GEMINI_LIVE_MODEL, api_key=config.google_api_key(),
         voice=config.GEMINI_VOICE, language=config.GEMINI_LANGUAGE, temperature=0.6,
+        input_audio_transcription=genai_types.AudioTranscriptionConfig(),
+        output_audio_transcription=genai_types.AudioTranscriptionConfig(),
     )
     session = AgentSession(llm=model)
 
+    # transcript: both sides
     @session.on("conversation_item_added")
     def _on_item(ev) -> None:
         item = getattr(ev, "item", ev)
         role = getattr(item, "role", "unknown")
         text = getattr(item, "text_content", None) or getattr(item, "content", "")
-        agent.record_turn(role, text if isinstance(text, str) else str(text))
+        if isinstance(text, list):
+            text = " ".join(str(x) for x in text)
+        agent.record_turn(role, str(text))
+
+    @session.on("user_input_transcribed")
+    def _on_user(ev) -> None:
+        if getattr(ev, "is_final", True) and getattr(ev, "transcript", ""):
+            agent.record_turn("user", ev.transcript)
 
     # --- ring the customer in -----------------------------------------
     trunk_id = os.environ.get("SIP_OUTBOUND_TRUNK_ID")
@@ -101,15 +114,20 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
                 ctx, phone=event.customer.phone, trunk_id=trunk_id,
                 caller_id=os.environ.get("SIP_CALLER_ID") or None,
             )
-        except Exception as exc:  # SIP failure — log and stop
+        except Exception as exc:
             logger.warning("SIP dial failed: %s", exc)
             answered = False
             agent.outcome.error = f"sip_dial_failed: {type(exc).__name__}"
         if not answered:
             agent.outcome.result = "no_answer"
             await session.aclose()
-            _finalise(event, agent)
+            _finalise(event, agent, started_at, None)
             return
+
+    # the call is connected — default outcome for a call that just ends
+    agent.outcome.result = "declined"
+
+    egress_id = await start_recording(ctx, event.event_id)
 
     await session.start(agent=agent, room=ctx.room)
     await session.generate_reply(
@@ -123,11 +141,20 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
         agent.outcome.error = "max_call_duration_exceeded"
         logger.warning("call hit max duration")
     finally:
-        await session.aclose()
-        _finalise(event, agent)
+        try:
+            await session.aclose()
+        except Exception:
+            pass
+        try:
+            await stop_recording(egress_id)
+        except Exception:
+            pass
+        _finalise(event, agent, started_at, egress_id)
 
 
 async def _wait_for_end(session, agent: RecoveryAgent) -> None:
+    """Resolve when the customer hangs up, or shortly after a terminal
+    tool (refusal / wrong-number / recovery) fires."""
     done = asyncio.Event()
 
     @session.on("close")
@@ -135,16 +162,37 @@ async def _wait_for_end(session, agent: RecoveryAgent) -> None:
         done.set()
 
     while not done.is_set():
-        if agent.outcome.result in ("recovered", "refused", "wrong_number", "declined"):
+        if agent.outcome.result in ("recovered", "refused", "wrong_number"):
             await asyncio.sleep(3)  # let the agent read its closing line
             return
         await asyncio.sleep(0.5)
 
 
-def _finalise(event: FailureEvent, agent: RecoveryAgent) -> None:
-    with db.get_conn() as conn:
-        write_call_audit(lambda **kw: append_event(conn, **kw), event, agent.outcome)
-    logger.info("call finalised: %s (%s)", event.event_id, agent.outcome.result)
+def _finalise(event: FailureEvent, agent: RecoveryAgent, started_at, egress_id) -> None:
+    from datetime import datetime, timezone
+
+    if agent.outcome.duration_s <= 0 and agent.outcome.result != "no_answer":
+        agent.outcome.duration_s = (
+            datetime.now(timezone.utc) - started_at
+        ).total_seconds()
+    if egress_id:
+        agent.outcome.recording_url = recording_url(event.event_id)
+
+    # best-effort — a DB blip at the end of a call must not crash the job
+    for attempt in range(4):
+        try:
+            with db.get_conn() as conn:
+                write_call_audit(lambda **kw: append_event(conn, **kw), event, agent.outcome)
+            logger.info("call finalised: %s (%s, %.0fs)",
+                        event.event_id, agent.outcome.result, agent.outcome.duration_s)
+            return
+        except Exception as exc:  # noqa: BLE001
+            if attempt < 3:
+                import time as _t
+                _t.sleep(2 * (attempt + 1))
+            else:
+                logger.error("could not write call outcome for %s: %s",
+                             event.event_id, exc)
 
 
 def main() -> None:

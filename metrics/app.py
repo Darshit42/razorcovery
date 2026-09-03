@@ -136,6 +136,18 @@ def event_detail(event_id: str) -> str:
     return templates.detail_page(lifecycles.get(event_id))
 
 
+@app.get("/calls", response_class=HTMLResponse)
+def calls_page(f: Filters = Depends(_filters)) -> str:
+    lcs = f.apply(list(compute.reconstruct(_rows(batch=f.batch)).values()))
+    return templates.calls_page(compute.voice_calls(lcs), batch=f.batch)
+
+
+@app.get("/api/calls")
+def api_calls(f: Filters = Depends(_filters)) -> list[dict]:
+    lcs = f.apply(list(compute.reconstruct(_rows(batch=f.batch)).values()))
+    return compute.voice_calls(lcs)
+
+
 @app.get("/api/summary")
 def api_summary(f: Filters = Depends(_filters)) -> dict:
     shown = f.apply(list(compute.reconstruct(_rows(batch=f.batch)).values()))

@@ -57,6 +57,8 @@ def process_event(
             "prior_attempts": event.prior_attempts,
             "refused": event.refused,
             "timezone": event.customer.timezone,
+            "customer_name": event.customer.name,
+            "customer_phone": event.customer.phone,
             "created_at": event.created_at.isoformat(),
         },
     )

@@ -29,11 +29,15 @@ class EventLifecycle:
     result: str | None = None               # from the last 'outcome' row
     recovered_amount_inr: int = 0
     retry_link_url: str | None = None
+    recording_url: str | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
     transcript: list[dict[str, str]] = field(default_factory=list)
     transcript_source: str | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     first_ts: Any = None          # datetime of the event_ingested row
+    batch_id: str | None = None
     timeline: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -69,6 +73,11 @@ def reconstruct(rows: list[dict[str, Any]]) -> dict[str, EventLifecycle]:
 
         et = r["entry_type"]
         payload = r.get("payload") or {}
+        if payload.get("batch_id") and not lc.batch_id:
+            lc.batch_id = payload["batch_id"]
+        if et == "event_ingested":
+            lc.customer_name = payload.get("customer_name") or lc.customer_name
+            lc.customer_phone = payload.get("customer_phone") or lc.customer_phone
         if et == "decision":
             lc.decided_intervention = r["intervention"]
             lc.decision_reason = r["reason"]
@@ -90,6 +99,7 @@ def reconstruct(rows: list[dict[str, Any]]) -> dict[str, EventLifecycle]:
             lc.result = payload.get("result")
             lc.call_seconds += float(payload.get("duration_s") or 0)
             lc.retry_link_url = payload.get("retry_link_url") or lc.retry_link_url
+            lc.recording_url = payload.get("recording_url") or lc.recording_url
             if payload.get("transcript"):
                 lc.transcript = payload["transcript"]
             lc.transcript_source = payload.get("transcript_source", lc.transcript_source)
@@ -230,6 +240,34 @@ def exceptions(lifecycles) -> list[dict[str, Any]]:
             }
         )
     return sorted(rows, key=lambda r: -(r["amount_inr"] or 0))
+
+
+def voice_calls(lifecycles) -> list[dict[str, Any]]:
+    """One row per voice call attempt, newest first — for the Call Logs page."""
+    from metrics import cost as _cost
+
+    rows = []
+    for lc in lifecycles:
+        if lc.attempts == 0 and lc.decided_intervention != "voice":
+            continue
+        rows.append({
+            "event_id": lc.event_id,
+            "batch_id": lc.batch_id,
+            "customer_name": lc.customer_name,
+            "phone": lc.customer_phone,
+            "ts": lc.first_ts.isoformat() if lc.first_ts is not None else None,
+            "amount_inr": lc.amount_inr,
+            "failure_type": lc.failure_type,
+            "duration_s": round(lc.call_seconds, 1),
+            "result": lc.result,
+            "recovered": lc.recovered,
+            "recovered_amount_inr": lc.recovered_amount_inr,
+            "llm_cost_inr": _cost.llm_cost_inr(lc.prompt_tokens, lc.completion_tokens),
+            "recording_url": lc.recording_url,
+            "has_transcript": bool(lc.transcript),
+        })
+    rows.sort(key=lambda r: r["ts"] or "", reverse=True)
+    return rows
 
 
 @dataclass
