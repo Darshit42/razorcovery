@@ -36,22 +36,9 @@ CREATE DATABASE razorcovery OWNER razorcovery;
 ## Run
 
 ```bash
-python -m data.generate_events                       # build data/fixtures/events.json
-python -m audit.db                                   # create the audit_log schema
-python -m decision.run_batch --now 2026-09-02T12:00:00+05:30   # route + log every event
-pytest -q                                            # 58 tests
-```
-
-Voice agent (joins a LiveKit room; needs LIVEKIT_* + GOOGLE_API_KEY):
-
-```bash
-python -m voice.agent dev                            # local worker
-```
-
-Web app:
-
-```bash
+python -m audit.db                     # create the audit_log schema
 uvicorn metrics.app:app --port 8000    # open http://localhost:8000, create an account
+pytest -q                              # ~110 tests (DB ones skip without Postgres)
 ```
 
 First run: `/login` shows "create the first account". Every page requires
@@ -64,21 +51,20 @@ the consent attestation → run the batch → watch it live at `/batch/{id}` →
 download the results. With telephony configured (below) voice rows place real
 calls; without it they're marked `skipped` — nothing is faked.
 
-The dashboard filters by failure type, intervention, status and date range
-(`/?failure_type=payment_retry&status=recovered`); same params on the JSON
-endpoints. LLM cost is real token usage (LiveKit UsageCollector) priced at
-Gemini 2.5 Flash list price; telephony is ₹0 until a provider is chosen.
+The dashboard filters by failure type, intervention, status, date range and
+batch (`/?failure_type=payment_retry&status=recovered`); same params on the
+JSON endpoints. LLM cost is real token usage (LiveKit `UsageCollector`) priced
+at Gemini list price; telephony is ₹0 until a per-minute rate is set.
 
 ## Layout
 
 ```
 data/       synthetic event generator (test fixtures only, not the app)
-decision/   failure-type -> intervention routing, stopping rules, batch runner
+decision/   failure-type -> intervention routing, stopping rules
 audit/      append-only Postgres audit log (schema, writer, reader, export)
-voice/      Gemini agent: prompt, flow (logged tools), headless conversation,
-            LiveKit outbound-SIP dialer
-intake/     merchant sheet -> parse (CSV/XLSX) -> batch/batch_row -> async runner
+voice/      Gemini agent, Hinglish prompt, SIP dialer, recording, setup/test
 auth/       accounts + sessions (bcrypt, Postgres), login middleware
+intake/     merchant sheet -> parse (CSV/XLSX) -> batch/batch_row -> real calls
 metrics/    FastAPI web app: auth + dashboard + call logs + intake
 tests/
 ```
@@ -107,9 +93,10 @@ append-only (DB trigger rejects UPDATE/DELETE); metrics derive from it only.
 
 ## Voice pipeline
 
-Clean-room build from the PRD spec. Gemini Live (`gemini-live-2.5-flash-native-audio`)
-via `livekit-plugins-google` — one model for STT+LLM+TTS, handles Hindi/English
-code-switching. The conversation is a `voice/flow.py` `Agent` whose real actions
+Gemini Live (`gemini-2.5-flash-native-audio-preview-12-2025`) via
+`livekit-plugins-google` — one model for STT+LLM+TTS, handles Hindi/English
+code-switching, with input+output audio transcription so both sides of the
+call are captured. The conversation is a `voice/flow.py` `Agent` whose real actions
 are function tools (`send_retry_link`, `mark_do_not_contact`, `wrong_person`,
 `offer_declined`, `end_call`) — the model's speech never moves state, only the
 logged tools do. The prompt forbids asking for card/CVV/OTP/UPI PIN and requires
