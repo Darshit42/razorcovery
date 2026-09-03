@@ -1,5 +1,8 @@
-"""HTTP smoke tests for the metrics app. Skipped when Postgres is
-unreachable (the app reads audit_log at request time)."""
+"""HTTP smoke tests for the web app. Skipped when Postgres is unreachable.
+
+NOTE: the tests that need data insert directly into audit_log and then
+TRUNCATE it in teardown — running this file clears recovery data. Use a
+throwaway DATABASE_URL if that matters."""
 import pytest
 
 from audit import db
@@ -7,20 +10,44 @@ from audit import db
 pytestmark = pytest.mark.skipif(not db.ping(), reason="Postgres not reachable")
 
 
-@pytest.fixture()
-def client():
+def test_auth_gate_redirects_anonymous():
     from fastapi.testclient import TestClient
 
     from metrics.app import app
 
-    return TestClient(app)
+    r = TestClient(app).get("/", follow_redirects=False)
+    assert r.status_code == 303
+    assert "/login" in r.headers["location"]
 
 
-def test_index_renders(client):
+@pytest.fixture()
+def one_event():
+    """Insert one real audit lifecycle so the dashboard has data."""
+    import uuid
+
+    from audit.log import append_event
+
+    eid = f"evt_{uuid.uuid4().hex[:8]}"
+    with db.get_conn() as conn:
+        append_event(conn, event_id=eid, customer_id="c1", entry_type="event_ingested",
+                     failure_type="payment_retry", amount_inr=5000)
+        append_event(conn, event_id=eid, customer_id="c1", entry_type="decision",
+                     failure_type="payment_retry", intervention="voice",
+                     reason="high value -> voice", amount_inr=5000, attempt_number=1)
+    yield eid
+    with db.get_conn() as conn:
+        conn.execute("TRUNCATE audit_log, batch_row, batch RESTART IDENTITY CASCADE")
+
+
+def test_index_empty_state_when_no_data(client):
+    # (other tests may have inserted rows; only assert the page renders)
     r = client.get("/")
     assert r.status_code == 200
-    body = r.text
-    assert "Recovery metrics" in body
+    assert "Recovery metrics" in r.text
+
+
+def test_index_renders_with_data(client, one_event):
+    body = client.get("/").text
     assert "Recovery by intervention" in body
     assert "Recovery by failure type" in body
     assert "Cost / effort per recovery" in body
@@ -51,7 +78,7 @@ def test_filters_narrow_the_result(client):
     assert client.get("/api/summary?failure_type=nonsense").status_code == 200
 
 
-def test_index_renders_filter_bar(client):
+def test_index_renders_filter_bar(client, one_event):
     body = client.get("/").text
     assert "name='failure_type'" in body and "name='since'" in body
     assert "Showing" in body

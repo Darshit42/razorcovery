@@ -13,8 +13,10 @@ See `PRD.md` for scope, `CLAUDE.md` for working rules.
 - [x] Metrics view — FastAPI + one HTML page, computed from the audit trail
 - [x] Merchant intake — upload a contact sheet, run the recovery batch,
       watch it live, download the results
-- [x] Real outbound-SIP dialer (activates on LIVEKIT_* + SIP trunk creds)
-- [ ] Telephony provider account + one live PSTN call end-to-end
+- [x] Real outbound calls — Vobiz SIP trunk via LiveKit (verified: live PSTN
+      call placed and answered)
+- [x] Accounts (email + password) gating the web app
+- [ ] Recording playback (wired; needs an S3 bucket)
 - [ ] Day-3 live pilot with a real merchant
 
 ## Setup
@@ -46,27 +48,21 @@ Voice agent (joins a LiveKit room; needs LIVEKIT_* + GOOGLE_API_KEY):
 python -m voice.agent dev                            # local worker
 ```
 
-Metrics view (needs GOOGLE_API_KEY for `--real`; DATABASE_URL always):
+Web app:
 
 ```bash
-python -m metrics.seed --reset --simulate            # fast, seeded estimates, no API calls
-# real Gemini agent for every voice event (needs Gemini quota headroom;
-# an AI Studio free key will rate-limit under a full batch):
-# python -m metrics.seed --reset --real-batch
-# top up real transcripts a few at a time:
-# python -m metrics.seed --append-real 5
-uvicorn metrics.app:app --port 8000                  # then open http://localhost:8000
+uvicorn metrics.app:app --port 8000    # open http://localhost:8000, create an account
 ```
 
-Or drive it from a real sheet: open `http://localhost:8000/upload`, upload a
-CSV/XLSX of contacts, tick the consent attestation, and run the batch — watch
-it live at `/batch/{id}` and download the results.
+First run: `/login` shows "create the first account". Every page requires
+sign-in (email + password, bcrypt, Postgres-backed sessions). There is **no
+synthetic/seeded data** — the dashboard starts empty and fills only from real
+use. `python -m metrics.seed --wipe` clears everything back to empty.
 
-Every `--reset` regenerates the synthetic batch with a random seed and a
-random count (45-75) — different customers, amounts and failure mix each
-run. `--keep-events` reuses the current fixture; `--gen-seed N` / `--count N`
-pin it. `data/fixtures/events.json` is a generated artifact (gitignored);
-`python -m data.generate_events` writes a deterministic seed-42 batch.
+Drive it from a real sheet: `/upload` → upload a CSV/XLSX of contacts → tick
+the consent attestation → run the batch → watch it live at `/batch/{id}` →
+download the results. With telephony configured (below) voice rows place real
+calls; without it they're marked `skipped` — nothing is faked.
 
 The dashboard filters by failure type, intervention, status and date range
 (`/?failure_type=payment_retry&status=recovered`); same params on the JSON
@@ -76,13 +72,14 @@ Gemini 2.5 Flash list price; telephony is ₹0 until a provider is chosen.
 ## Layout
 
 ```
-data/       synthetic event generator + pydantic schemas + fixtures
+data/       synthetic event generator (test fixtures only, not the app)
 decision/   failure-type -> intervention routing, stopping rules, batch runner
 audit/      append-only Postgres audit log (schema, writer, reader, export)
 voice/      Gemini agent: prompt, flow (logged tools), headless conversation,
             LiveKit outbound-SIP dialer
 intake/     merchant sheet -> parse (CSV/XLSX) -> batch/batch_row -> async runner
-metrics/    FastAPI: dashboard + intake routes, computed from audit_log
+auth/       accounts + sessions (bcrypt, Postgres), login middleware
+metrics/    FastAPI web app: auth + dashboard + call logs + intake
 tests/
 ```
 
@@ -121,8 +118,7 @@ honouring a hard "don't contact me again" immediately.
 Telephony: `voice/dialer.py` has a real `LiveKitSipDialer` and `voice/agent.py`
 rings the callee in with `create_sip_participant`. It activates when
 `LIVEKIT_*` + `SIP_OUTBOUND_TRUNK_ID` are set. Until then `UnconfiguredDialer`
-runs and each voice row uses `voice/headless.converse` — a real Gemini
-conversation with a scripted synthetic customer, no PSTN.
+runs and voice rows are marked `skipped` (no fake conversation).
 
 Wiring it up (one-time):
 
@@ -153,34 +149,27 @@ computed from `audit_log`.
 - `POST /upload` (attested) creates a `batch` + one `batch_row` per contact.
 - `POST /batch/{id}/run` spawns `python -m intake.run_batch <id>` (subprocess:
   LiveKit plugins need the process main thread). Per row: build a real
-  `FailureEvent` → `decision.route` → dial (if telephony configured) or
-  headless Gemini conversation → audit rows tagged `payload.batch_id`.
+  `FailureEvent` → `decision.route` → place a real call (telephony configured)
+  or mark `skipped` → audit rows tagged `payload.batch_id`.
 - `GET /batch/{id}` — live progress bar + records table (polls
   `/batch/{id}/progress`). `GET /batch/{id}/stream` is the SSE feed.
 - `GET /batch/{id}/export.csv` / `.json` — per-row decision + outcome +
   transcript. `GET /?batch=<id>` slices the whole dashboard to that batch.
 - `GET /batches` — all batches.
 
-## Metrics view
+## Web app
 
-`metrics/` — FastAPI, read-only, no auth. Server-rendered HTML styled with the
-Tailwind CDN (no build step, no React / component library); fixed sidebar,
-stat-card row, white content panels, empty states. Everything is computed from
-`audit_log` at request time (`metrics/compute.py`).
+`metrics/` — FastAPI, accounts required (`auth/`). Server-rendered HTML +
+Tailwind CDN; fixed sidebar (Dashboard / Call logs / Upload sheet / Batches),
+stat cards, white panels, empty states. All numbers computed from `audit_log`
+at request time (`metrics/compute.py`) — nothing seeded.
 
 - `GET /` — recovery rate + ₹ recovered by intervention and by failure type;
-  cost/effort per recovery (attempts, call minutes, ₹ at documented rates in
-  `metrics/cost.py`); stopping-rule counts; the full exceptions list (every
-  non-recovered event + why, nothing hidden); an all-events table.
-- `GET /event/{id}` — drill-down for the pitch demo: event facts -> decision +
-  reason -> stopping rules -> action -> outcome -> the call transcript as
-  readable dialogue, tagged **real** (genuine Gemini) or **simulated**.
-- `GET /api/summary`, `/api/exceptions`, `/api/event/{id}` — same data as JSON.
-
-`metrics/seed.py --real-batch` runs the actual Gemini agent (scripted synthetic
-customers, 8 personas, no live telephony) for every non-blocked voice event and
-logs real transcripts + tool-driven outcomes; Gemini failures are logged
-honestly as `result="failed"`, never faked. SMS / link interventions have no
-delivery channel yet, so they get no outcome and show as unconfirmed. `--simulate`
-keeps the old seeded probability model for a fast demo. The page banner states
-which mode produced the data.
+  real LLM cost per recovery (token usage × Gemini list price); stopping-rule
+  counts; the full exceptions list (every non-recovered event + why); all events.
+- `GET /calls` — every outbound voice call: time, number, duration, result,
+  ₹ cost, links to the recording + transcript.
+- `GET /event/{id}` — drill-down: event facts → decision + reason → stopping
+  rules → recording player → transcript → full audit timeline.
+- `GET /api/summary`, `/api/exceptions`, `/api/calls`, `/api/event/{id}` — JSON.
+- `GET /login`, `/signup`, `POST /logout`.

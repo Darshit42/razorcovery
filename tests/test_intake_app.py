@@ -13,13 +13,7 @@ _CSV = (
 ).encode()
 
 
-@pytest.fixture()
-def client():
-    from fastapi.testclient import TestClient
-
-    from metrics.app import app
-
-    return TestClient(app)
+# `client` fixture comes from tests/conftest.py (signed-in TestClient)
 
 
 def test_upload_page_renders(client):

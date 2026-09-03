@@ -1,10 +1,9 @@
-"""Metrics view + merchant intake workflow.
+"""Metrics view + merchant intake workflow + accounts.
 
     uvicorn metrics.app:app --port 8000
 
-Read paths: the dashboard and drill-down over audit_log.
-Write paths: /upload accepts a contact sheet, /batch/{id}/run executes
-the recovery workflow for it. No auth (single-tenant demo).
+Every page requires a signed-in account (auth/). Data comes only from
+real use — uploads and real calls; there is no synthetic seeding.
 """
 from __future__ import annotations
 
@@ -16,23 +15,93 @@ import json
 import subprocess
 import sys
 from datetime import date
+from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from audit import db
 from audit.log import query
+from auth import service as auth_service
 from intake import parse as intake_parse
 from intake import store as intake_store
-from metrics import compute, templates
-
-from pathlib import Path
+from metrics import _ctx, compute, templates
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 load_dotenv()
 app = FastAPI(title="razorcovery", docs_url=None, redoc_url=None)
+
+_PUBLIC_PATHS = {"/login", "/signup", "/logout", "/favicon.ico"}
+
+
+@app.middleware("http")
+async def _require_login(request: Request, call_next):
+    path = request.url.path
+    if path in _PUBLIC_PATHS:
+        return await call_next(request)
+    try:
+        user = auth_service.session_user(request.cookies.get(auth_service.SESSION_COOKIE))
+    except Exception:  # DB blip — fail closed to the login page
+        user = None
+    if user is None:
+        nxt = "" if path == "/" else f"?next={path}"
+        return RedirectResponse(f"/login{nxt}", status_code=303)
+    tok = _ctx.current_email.set(user.email)
+    try:
+        return await call_next(request)
+    finally:
+        _ctx.current_email.reset(tok)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(next: str = "/", error: str = "") -> str:
+    try:
+        first_run = auth_service.user_count() == 0
+    except Exception:
+        first_run = False
+    return templates.login_page(next=next, error=error, first_run=first_run)
+
+
+@app.post("/login")
+def login(email: str = Form(...), password: str = Form(...),
+          next: str = Form("/")) -> RedirectResponse:
+    try:
+        token = auth_service.log_in(email, password)
+    except auth_service.AuthError as exc:
+        return RedirectResponse(f"/login?error={exc}", status_code=303)
+    resp = RedirectResponse(next or "/", status_code=303)
+    resp.set_cookie(auth_service.SESSION_COOKIE, token, httponly=True,
+                    samesite="lax", max_age=14 * 24 * 3600)
+    return resp
+
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_form(error: str = "") -> str:
+    return templates.signup_page(error=error)
+
+
+@app.post("/signup")
+def signup(email: str = Form(...), password: str = Form(...),
+           name: str = Form("")) -> RedirectResponse:
+    try:
+        auth_service.sign_up(email, password, name)
+        token = auth_service.log_in(email, password)
+    except auth_service.AuthError as exc:
+        return RedirectResponse(f"/signup?error={exc}", status_code=303)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(auth_service.SESSION_COOKIE, token, httponly=True,
+                    samesite="lax", max_age=14 * 24 * 3600)
+    return resp
+
+
+@app.post("/logout")
+def logout(request: Request) -> RedirectResponse:
+    auth_service.log_out(request.cookies.get(auth_service.SESSION_COOKIE))
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(auth_service.SESSION_COOKIE)
+    return resp
 
 
 _ROW_COLS = ["id", "ts", "event_id", "customer_id", "entry_type", "failure_type",
@@ -49,12 +118,6 @@ def _rows(batch: str | None = None):
             ).fetchall()
             return [dict(zip(_ROW_COLS, r)) for r in raw]
         return query(conn)
-
-
-def _has_simulated(lifecycles) -> bool:
-    return any(lc.transcript_source == "simulated" for lc in lifecycles) or any(
-        (r.get("payload") or {}).get("simulated") for lc in lifecycles for r in lc.timeline
-    )
 
 
 def _parse_date(s: str | None) -> date | None:
@@ -126,7 +189,6 @@ def index(f: Filters = Depends(_filters)) -> str:
         total_events=len(all_lcs),
         filters=f.as_dict(),
         filters_active=f.active,
-        has_simulated=_has_simulated(shown),
     )
 
 

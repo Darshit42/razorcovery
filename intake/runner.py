@@ -1,4 +1,4 @@
-"""Execute a batch: for each row, decide -> (call | headless conversation) -> log.
+"""Execute a batch: for each row, decide -> place the real call -> log.
 
 Every audit_log row written here carries payload['batch_id'] so the
 metrics view can slice by batch. Row status in batch_row drives the live
@@ -18,7 +18,6 @@ from data.schemas import Customer, FailureEvent
 from decision.pipeline import process_event
 from intake import store
 from voice.dialer import Dialer, from_env
-from voice.headless import PERSONAS, converse
 from voice.outcome import CallOutcome, write_call_audit
 
 MAX_CONCURRENCY = 2          # gentle on the LLM / SIP trunk
@@ -102,8 +101,14 @@ async def _run_row(batch_id: str, row: dict, *, now: datetime, dialer: Dialer,
         result = decision.intervention
 
         if decision.intervention == "voice":
-            try:
-                if getattr(dialer, "configured", False):
+            if not getattr(dialer, "configured", False):
+                # no telephony -> we do NOT fake a conversation
+                final_status, result, err = "skipped", "no_telephony", (
+                    "SIP_OUTBOUND_TRUNK_ID / LIVEKIT_* not configured — real "
+                    "call not placed"
+                )
+            else:
+                try:
                     await dialer.place_call(
                         room_name=f"recovery-{event.event_id}",
                         phone=event.customer.phone,
@@ -111,31 +116,14 @@ async def _run_row(batch_id: str, row: dict, *, now: datetime, dialer: Dialer,
                     )
                     with db.get_conn() as conn:
                         result = await _await_live_outcome(conn, event.event_id) or "no_answer"
-                else:
-                    persona = PERSONAS[row["row_index"] % len(PERSONAS)]
-                    outcome = None
-                    for attempt in range(3):
-                        try:
-                            outcome = await converse(
-                                event, attempt_number=decision.attempt_number or 1,
-                                persona=persona, merchant=merchant,
-                            )
-                            break
-                        except Exception:
-                            if attempt < 2:
-                                await asyncio.sleep(2)
-                            else:
-                                raise
+                except Exception as exc:  # noqa: BLE001
+                    outcome = CallOutcome(
+                        result="failed", attempt_number=decision.attempt_number or 1,
+                        error=f"{type(exc).__name__}: {exc}"[:200],
+                    )
                     with db.get_conn() as conn:
                         write_call_audit(_tagged_sink(conn, batch_id), event, outcome)
-                    result = outcome.result
-            except Exception as exc:  # noqa: BLE001
-                outcome = CallOutcome(result="failed",
-                                      attempt_number=decision.attempt_number or 1,
-                                      error=f"{type(exc).__name__}: {exc}"[:200])
-                with db.get_conn() as conn:
-                    write_call_audit(_tagged_sink(conn, batch_id), event, outcome)
-                final_status, result, err = "failed", "failed", outcome.error
+                    final_status, result, err = "failed", "failed", outcome.error
         elif decision.intervention == "none":
             final_status, result = "blocked", "none"
         # sms / link_only fall through: logged decision, no delivery channel

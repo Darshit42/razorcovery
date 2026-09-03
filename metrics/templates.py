@@ -13,6 +13,7 @@ import html
 from typing import Any
 
 from metrics import cost
+from metrics._ctx import current_email
 from metrics.compute import EventLifecycle, Summary
 
 # One accent colour, distinct from the reference's amber: teal.
@@ -32,16 +33,6 @@ tailwind.config = {
   }
 }
 """
-
-_NAV = [
-    ("overview", "Overview", "grid"),
-    ("intervention", "By intervention", "bars"),
-    ("failure-type", "By failure type", "layers"),
-    ("effort", "Cost & effort", "rupee"),
-    ("stopping-rules", "Stopping rules", "shield"),
-    ("exceptions", "Exceptions", "alert"),
-    ("all-events", "All events", "list"),
-]
 
 _ICONS = {
     "grid": "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
@@ -196,8 +187,9 @@ _PAGES = [
 ]
 
 
-def _sidebar(active: str, *, show_nav: bool) -> str:
-    def _page_link(href: str, label: str, icon: str, cur: bool) -> str:
+def _sidebar(active: str) -> str:
+    def _page_link(href: str, label: str, icon: str) -> str:
+        cur = active == href
         cls = ("bg-brand-50 text-brand-700" if cur
                else "text-slate-500 hover:bg-slate-100 hover:text-slate-700")
         ic = "text-brand-600" if cur else "text-slate-400"
@@ -207,17 +199,16 @@ def _sidebar(active: str, *, show_nav: bool) -> str:
             f"<span class='{ic}'>{_icon(icon, 'w-4 h-4')}</span>{_e(label)}</a>"
         )
 
-    pages = "".join(_page_link(h, l, i, active == h) for h, l, i in _PAGES)
-    nav = f"<nav class='mt-8 space-y-1'>{pages}</nav>"
+    pages = "".join(_page_link(h, l, i) for h, l, i in _PAGES)
 
-    if show_nav and active == "/":
-        sub = "".join(
-            f"<a href='#{pid}' class='flex items-center gap-3 rounded-lg px-3 py-1.5 "
-            f"text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-700'>"
-            f"<span class='text-slate-400'>{_icon(icon, 'w-4 h-4')}</span>{_e(label)}</a>"
-            for pid, label, icon in _NAV[1:]
-        )
-        nav += f"<div class='mt-4 border-t border-slate-100 pt-4 space-y-1'>{sub}</div>"
+    email = current_email.get()
+    footer = (
+        "<form method='post' action='/logout' class='mt-auto border-t border-slate-100 pt-4'>"
+        f"<p class='px-3 text-xs text-slate-400 truncate'>{_e(email or '')}</p>"
+        "<button class='mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm "
+        "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700'>"
+        f"{_icon('back', 'w-4 h-4')}Sign out</button></form>"
+    ) if email else "<div class='mt-auto'></div>"
 
     return (
         "<aside class='fixed inset-y-0 left-0 hidden w-72 flex-col border-r border-slate-200 "
@@ -227,13 +218,13 @@ def _sidebar(active: str, *, show_nav: bool) -> str:
         f"{_icon('phone', 'w-5 h-5')}</div>"
         "<div><p class='text-sm font-semibold text-slate-900'>razorcovery</p>"
         "<p class='text-xs text-slate-400'>revenue recovery</p></div></a>"
-        f"{nav}"
-        "<div class='mt-auto pt-6 text-xs text-slate-300'>computed from the audit trail</div>"
+        f"<nav class='mt-8 space-y-1'>{pages}</nav>"
+        f"{footer}"
         "</aside>"
     )
 
 
-def _shell(title: str, active: str, body: str, *, show_nav: bool = True) -> str:
+def _head(title: str) -> str:
     return (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -245,9 +236,15 @@ def _shell(title: str, active: str, body: str, *, show_nav: bool = True) -> str:
         "<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' rel='stylesheet'>"
         "<style>body{font-family:Inter,system-ui,sans-serif}</style></head>"
         "<body class='bg-canvas text-slate-800'>"
-        f"{_sidebar(active, show_nav=show_nav)}"
-        f"<main class='lg:pl-72'><div class='mx-auto max-w-5xl px-6 py-10'>{body}</div></main>"
-        "</body></html>"
+    )
+
+
+def _shell(title: str, active: str, body: str, *, show_nav: bool = True) -> str:
+    return (
+        _head(title)
+        + _sidebar(active)
+        + f"<main class='lg:pl-72'><div class='mx-auto max-w-5xl px-6 py-10'>{body}</div></main>"
+        + "</body></html>"
     )
 
 
@@ -321,32 +318,13 @@ def _filter_bar(filters: dict, total: int, shown: int, active: bool) -> str:
 
 
 def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecycle],
-               *, has_simulated: bool, total_events: int | None = None,
-               filters: dict | None = None, filters_active: bool = False) -> str:
+               *, total_events: int | None = None,
+               filters: dict | None = None, filters_active: bool = False,
+               **_ignored) -> str:
     eff = s.effort
     total_events = s.total_events if total_events is None else total_events
     filters = filters or {}
-
-    if has_simulated:
-        msg = (
-            "Some batch call outcomes are <span class='font-semibold'>simulated</span> "
-            "(seeded model in <code class='rounded bg-amber-100 px-1'>metrics/seed.py</code>). "
-            "Drill-downs tagged <span class='font-semibold'>real</span> are genuine Gemini "
-            "conversations. SMS / link interventions have no delivery channel yet and show as "
-            "unconfirmed."
-        )
-    else:
-        msg = (
-            "Voice outcomes are <span class='font-semibold'>real Gemini conversations</span> "
-            "with scripted synthetic customers (no live telephony yet). SMS / link "
-            "interventions have no delivery channel and show as unconfirmed. Real customer "
-            "calls land in the Day-3 pilot."
-        )
-    banner = (
-        "<div class='mb-8 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4'>"
-        f"<span class='mt-0.5 text-amber-500'>{_icon('alert', 'w-5 h-5')}</span>"
-        f"<p class='text-sm text-amber-800'>{msg}</p></div>"
-    )
+    banner = ""
 
     cards = (
         _stat_card("bars", "teal", "recovery rate", _pct(s.recovery_rate),
@@ -459,7 +437,18 @@ def index_page(s: Summary, exceptions: list[dict], lifecycles: list[EventLifecyc
 
     filter_bar = _filter_bar(filters, total_events, s.total_events, filters_active)
 
-    if s.total_events == 0:
+    if s.total_events == 0 and not filters_active:
+        body = (
+            "<div class='mb-8'><h1 class='text-2xl font-semibold text-slate-900'>Recovery metrics</h1></div>"
+            + _panel("overview", "No recovery data yet",
+                     _empty("spark", "Nothing to show",
+                            "Upload a contact sheet and run a batch, or place a "
+                            "call — every number here is computed from real activity.")
+                     + "<div class='mt-4 flex justify-center'><a href='/upload' "
+                     "class='rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium "
+                     "text-white hover:bg-brand-700'>Upload a sheet</a></div>")
+        )
+    elif s.total_events == 0:
         body = header + filter_bar + _panel(
             "overview", "No matching events",
             _empty("list", "Nothing matches these filters",
@@ -874,3 +863,69 @@ def calls_page(rows: list[dict], *, batch: str | None = None) -> str:
         + _panel("calls", "Calls", table)
     )
     return _shell("razorcovery — call logs", "/calls", body)
+
+
+# --------------------------------------------------------------------------
+# auth pages
+# --------------------------------------------------------------------------
+def _auth_shell(title: str, body: str) -> str:
+    return (
+        _head(title)
+        + "<main class='flex min-h-screen items-center justify-center px-4'>"
+        + f"<div class='w-full max-w-sm'>{body}</div></main></body></html>"
+    )
+
+
+def _auth_card(heading: str, sub: str, form: str, error: str, foot: str) -> str:
+    err = (f"<div class='mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 "
+           f"text-sm text-rose-700'>{_e(error)}</div>" if error else "")
+    return (
+        "<div class='mb-6 flex items-center gap-3'>"
+        "<div class='flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white'>"
+        f"{_icon('phone', 'w-5 h-5')}</div>"
+        "<div><p class='text-sm font-semibold text-slate-900'>razorcovery</p>"
+        "<p class='text-xs text-slate-400'>revenue recovery</p></div></div>"
+        "<div class='rounded-2xl border border-slate-200 bg-white p-6 shadow-sm'>"
+        f"<h1 class='text-lg font-semibold text-slate-900'>{_e(heading)}</h1>"
+        f"<p class='mt-1 text-sm text-slate-500'>{_e(sub)}</p>"
+        f"<div class='mt-5'>{err}{form}</div></div>"
+        f"<p class='mt-4 text-center text-sm text-slate-500'>{foot}</p>"
+    )
+
+
+def _field(name: str, label: str, typ: str = "text", value: str = "") -> str:
+    return (
+        f"<label class='block'><span class='text-sm font-medium text-slate-600'>{_e(label)}</span>"
+        f"<input name='{name}' type='{typ}' value='{_e(value)}' required "
+        f"class='mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm'></label>"
+    )
+
+
+def login_page(*, next: str = "/", error: str = "", first_run: bool = False) -> str:
+    form = (
+        f"<form method='post' action='/login' class='space-y-4'>"
+        f"<input type='hidden' name='next' value='{_e(next)}'>"
+        f"{_field('email', 'Email', 'email')}"
+        f"{_field('password', 'Password', 'password')}"
+        "<button class='w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium "
+        "text-white hover:bg-brand-700'>Sign in</button></form>"
+    )
+    sub = ("Create the first account to get started." if first_run
+           else "Sign in to your razorcovery account.")
+    foot = "No account? <a href='/signup' class='text-brand-700 underline'>Sign up</a>"
+    return _auth_shell("razorcovery — sign in", _auth_card("Sign in", sub, form, error, foot))
+
+
+def signup_page(*, error: str = "") -> str:
+    form = (
+        "<form method='post' action='/signup' class='space-y-4'>"
+        f"{_field('name', 'Name')}"
+        f"{_field('email', 'Email', 'email')}"
+        f"{_field('password', 'Password (min 8 chars)', 'password')}"
+        "<button class='w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium "
+        "text-white hover:bg-brand-700'>Create account</button></form>"
+    )
+    foot = "Already have an account? <a href='/login' class='text-brand-700 underline'>Sign in</a>"
+    return _auth_shell("razorcovery — sign up",
+                       _auth_card("Create account", "One login for the whole workspace.",
+                                  form, error, foot))
