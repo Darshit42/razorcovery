@@ -16,6 +16,9 @@ See `PRD.md` for scope, `CLAUDE.md` for working rules.
 - [x] Real outbound calls — Vobiz SIP trunk via LiveKit (verified: live PSTN
       call placed and answered)
 - [x] Accounts (email + password) gating the web app
+- [x] Editable agent prompt (`/settings`) — persona/tone/flow customisable
+      per workspace; compliance guardrails always appended, not editable
+- [x] Sample sheet download on `/upload`
 - [ ] Recording playback (wired; needs an S3 bucket)
 - [ ] Day-3 live pilot with a real merchant
 
@@ -147,9 +150,9 @@ computed from `audit_log`.
 ## Web app
 
 `metrics/` — FastAPI, accounts required (`auth/`). Server-rendered HTML +
-Tailwind CDN; fixed sidebar (Dashboard / Call logs / Upload sheet / Batches),
-stat cards, white panels, empty states. All numbers computed from `audit_log`
-at request time (`metrics/compute.py`) — nothing seeded.
+Tailwind CDN; fixed sidebar (Dashboard / Call logs / Upload sheet / Batches /
+Agent prompt), stat cards, white panels, empty states. All numbers computed
+from `audit_log` at request time (`metrics/compute.py`) — nothing seeded.
 
 - `GET /` — recovery rate + ₹ recovered by intervention and by failure type;
   real LLM cost per recovery (token usage × Gemini list price); stopping-rule
@@ -158,5 +161,11 @@ at request time (`metrics/compute.py`) — nothing seeded.
   ₹ cost, links to the recording + transcript.
 - `GET /event/{id}` — drill-down: event facts → decision + reason → stopping
   rules → recording player → transcript → full audit timeline.
+- `GET /settings` — the agent's persona/tone/call-flow is editable per
+  workspace (`voice/agent_prompt.py`, one row, no multi-tenant); the
+  no-card/OTP + hard-refusal guardrails are a fixed block always appended
+  after the editable text, and are also enforced structurally by the call
+  flow's tools (`voice/flow.py`) — editing the wording can't disable them.
+  `/upload` has a "Download a sample sheet" link showing the expected columns.
 - `GET /api/summary`, `/api/exceptions`, `/api/calls`, `/api/event/{id}` — JSON.
 - `GET /login`, `/signup`, `POST /logout`.

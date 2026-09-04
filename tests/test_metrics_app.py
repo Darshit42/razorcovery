@@ -1,8 +1,10 @@
 """HTTP smoke tests for the web app. Skipped when Postgres is unreachable.
 
-NOTE: the tests that need data insert directly into audit_log and then
-TRUNCATE it in teardown — running this file clears recovery data. Use a
-throwaway DATABASE_URL if that matters."""
+NOTE: `one_event` inserts one real audit_log lifecycle (prefixed
+`pytest_evt_`) and does NOT delete it afterwards — audit_log is
+append-only by design (PRD compliance requirement), so tests don't fight
+that; the one extra row is a harmless, clearly-marked artifact, same as
+any other real event."""
 import pytest
 
 from audit import db
@@ -27,16 +29,14 @@ def one_event():
 
     from audit.log import append_event
 
-    eid = f"evt_{uuid.uuid4().hex[:8]}"
+    eid = f"pytest_evt_{uuid.uuid4().hex[:8]}"
     with db.get_conn() as conn:
-        append_event(conn, event_id=eid, customer_id="c1", entry_type="event_ingested",
+        append_event(conn, event_id=eid, customer_id="pytest_c1", entry_type="event_ingested",
                      failure_type="payment_retry", amount_inr=5000)
-        append_event(conn, event_id=eid, customer_id="c1", entry_type="decision",
+        append_event(conn, event_id=eid, customer_id="pytest_c1", entry_type="decision",
                      failure_type="payment_retry", intervention="voice",
                      reason="high value -> voice", amount_inr=5000, attempt_number=1)
-    yield eid
-    with db.get_conn() as conn:
-        conn.execute("TRUNCATE audit_log, batch_row, batch RESTART IDENTITY CASCADE")
+    return eid
 
 
 def test_index_empty_state_when_no_data(client):

@@ -184,6 +184,7 @@ _PAGES = [
     ("/calls", "Call logs", "phone"),
     ("/upload", "Upload sheet", "spark"),
     ("/batches", "Batches", "list"),
+    ("/settings", "Agent prompt", "shield"),
 ]
 
 
@@ -606,7 +607,9 @@ def upload_page(*, merchant: str = "", batch_name: str = "", error: str = "") ->
     body = (
         "<div class='mb-8'><h1 class='text-2xl font-semibold text-slate-900'>Upload a contact sheet</h1>"
         "<p class='mt-1 text-sm text-slate-500'>CSV or XLSX. One row per customer whose "
-        "payment failed. We auto-detect the columns; you can override the phone column below.</p></div>"
+        "payment failed. We auto-detect the columns; you can override the phone column below. "
+        "<a href='/upload/sample.csv' class='font-medium text-brand-700 hover:underline'>"
+        "Download a sample sheet</a> to see the expected format.</p></div>"
         f"{err}"
         "<form method='post' action='/upload' enctype='multipart/form-data' "
         "class='max-w-xl space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm'>"
@@ -929,3 +932,72 @@ def signup_page(*, error: str = "") -> str:
     return _auth_shell("razorcovery — sign up",
                        _auth_card("Create account", "One login for the whole workspace.",
                                   form, error, foot))
+
+
+def settings_page(*, template: str, guardrails: str, is_custom: bool,
+                  updated_at: str, updated_by: str, saved: bool = False,
+                  error: str = "") -> str:
+    banner = ""
+    if saved:
+        banner = (
+            "<div class='mb-6 flex gap-3 rounded-2xl border border-emerald-200 "
+            "bg-emerald-50 px-5 py-4 text-sm text-emerald-800'>"
+            f"{_icon('check', 'w-5 h-5 mt-0.5 text-emerald-500')}Saved. New calls use this prompt.</div>"
+        )
+    if error:
+        banner += (f"<div class='mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 "
+                   f"text-sm text-rose-700'>{_e(error)}</div>")
+
+    meta = ""
+    if is_custom:
+        meta = (f"<p class='mt-1 text-xs text-slate-400'>Customised"
+                f"{' by ' + _e(updated_by) if updated_by else ''}"
+                f"{' · ' + _e(updated_at[:16].replace('T', ' ')) if updated_at else ''} · "
+                f"<span class='text-slate-400'>default is the original razorcovery script</span></p>")
+    else:
+        meta = "<p class='mt-1 text-xs text-slate-400'>Using the default script — not yet customised.</p>"
+
+    editor = (
+        "<form method='post' action='/settings/prompt'>"
+        "<label class='block'><span class='text-sm font-medium text-slate-600'>"
+        "Persona, tone &amp; call flow</span>"
+        f"{meta}"
+        f"<textarea name='template' rows='22' spellcheck='false' required "
+        "class='mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 "
+        "font-mono text-xs leading-relaxed text-slate-800'>"
+        f"{_e(template)}</textarea></label>"
+        "<p class='mt-2 text-xs text-slate-400'>Placeholders filled per call: "
+        "<code class='rounded bg-slate-100 px-1'>{merchant}</code> "
+        "<code class='rounded bg-slate-100 px-1'>{customer_name}</code> "
+        "<code class='rounded bg-slate-100 px-1'>{failure_desc}</code> "
+        "<code class='rounded bg-slate-100 px-1'>{amount}</code> "
+        "<code class='rounded bg-slate-100 px-1'>{offer}</code></p>"
+        "<div class='mt-4 flex gap-3'>"
+        "<button class='rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white "
+        "hover:bg-brand-700'>Save</button></div></form>"
+        "<form method='post' action='/settings/prompt/reset' class='mt-2'>"
+        "<button class='text-sm text-slate-500 hover:text-slate-700 underline'>"
+        "Reset to default</button></form>"
+    )
+
+    fixed = (
+        f"<pre class='whitespace-pre-wrap rounded-lg bg-slate-50 p-4 font-mono text-xs "
+        f"leading-relaxed text-slate-600'>{_e(guardrails)}</pre>"
+        "<p class='mt-2 text-xs text-slate-400'>Always appended after the text above, on every "
+        "call, for every vendor — not editable here. The no-card/OTP rule and the hard-refusal "
+        "handling are also enforced structurally by the call flow's tools "
+        "(<code class='rounded bg-slate-100 px-1'>voice/flow.py</code>), not by prompt text alone.</p>"
+    )
+
+    body = (
+        "<div class='mb-8'><h1 class='text-2xl font-semibold text-slate-900'>Agent prompt</h1>"
+        "<p class='mt-1 text-sm text-slate-500'>What Priya says and how she carries the call. "
+        "Shared across the workspace — every vendor's calls use this.</p></div>"
+        f"{banner}"
+        "<div class='space-y-8'>"
+        + _panel("editor", "Editable", editor)
+        + _panel("guardrails", "Fixed guardrails", fixed,
+                 "compliance text that can't be edited away")
+        + "</div>"
+    )
+    return _shell("razorcovery — agent prompt", "/settings", body)

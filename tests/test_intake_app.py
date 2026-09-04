@@ -38,28 +38,34 @@ def test_upload_without_attest_shows_preview_no_batch(client):
 def test_upload_with_attest_creates_batch_and_redirects(client):
     r = client.post(
         "/upload",
-        data={"merchant": "ChaiPoint", "batch_name": "attested run", "attest": "on"},
+        data={"merchant": "pytest", "batch_name": "pytest attested run", "attest": "on"},
         files={"file": ("c.csv", _CSV, "text/csv")},
         follow_redirects=False,
     )
     assert r.status_code == 303
     loc = r.headers["location"]
     assert loc.startswith("/batch/batch_")
-    page = client.get(loc)
-    assert page.status_code == 200
-    assert "attested run" in page.text
-    assert "Start batch" in page.text  # pending, not yet run
-
     bid = loc.split("/batch/")[1]
-    prog = client.get(f"/batch/{bid}/progress").json()
-    assert prog["total"] == 2 and prog["status"] == "pending"
+    try:
+        page = client.get(loc)
+        assert page.status_code == 200
+        assert "pytest attested run" in page.text
+        assert "Start batch" in page.text  # pending, not yet run
 
-    # exports work even before a run
-    csv = client.get(f"/batch/{bid}/export.csv")
-    assert csv.status_code == 200
-    assert "customer_name" in csv.text and "Ravi" in csv.text
-    js = client.get(f"/batch/{bid}/export.json").json()
-    assert js["batch"]["id"] == bid and len(js["rows"]) == 2
+        prog = client.get(f"/batch/{bid}/progress").json()
+        assert prog["total"] == 2 and prog["status"] == "pending"
+
+        # exports work even before a run
+        csv = client.get(f"/batch/{bid}/export.csv")
+        assert csv.status_code == 200
+        assert "customer_name" in csv.text and "Ravi" in csv.text
+        js = client.get(f"/batch/{bid}/export.json").json()
+        assert js["batch"]["id"] == bid and len(js["rows"]) == 2
+    finally:
+        from audit import db
+
+        with db.get_conn() as conn:
+            conn.execute("DELETE FROM batch WHERE id=%s", (bid,))
 
 
 def test_unknown_batch_404(client):

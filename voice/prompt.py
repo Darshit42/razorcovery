@@ -1,18 +1,23 @@
 """Hinglish system prompt for the recovery voice agent.
 
-Clean-room: written from the PRD conversation spec (§3), not adapted
-from any external agent codebase. The prompt is deliberately assembled
-from a base persona + per-failure-type context so every call is grounded
-in the specific event.
+The persona/tone/call-flow portion is editable per workspace (see
+voice/agent_prompt.py) — vendors can tune how their agent sounds. The
+HARD RULES block is fixed and always appended after the vendor's text,
+so it can never be edited away; the tool-gated actions in voice/flow.py
+enforce the real constraints (no card capture, hard-stop on refusal)
+structurally regardless of what the prompt text says.
 """
 from __future__ import annotations
 
 from data.schemas import FailureEvent
 
-# Base persona. Hinglish = natural Hindi-English code-switching as a
+# Editable default. Hinglish = natural Hindi-English code-switching as a
 # bilingual Indian support caller would actually speak, Devanagari or
 # roman both fine. NOT formal Hindi, NOT pure English.
-BASE_PERSONA = """\
+# Placeholders (plain {token}, replaced textually — not str.format, so a
+# vendor's edited text can't crash on a stray brace): {merchant}
+# {customer_name} {failure_desc} {amount} {offer}
+DEFAULT_TEMPLATE = """\
 Tum "Priya" ho, {merchant} ki taraf se ek friendly payment-support agent.
 Tum ek outbound call kar rahi ho kyunki customer ka payment fail hua hai
 aur tum unki help karna chahti ho use complete karne mein.
@@ -34,7 +39,11 @@ CALL KA FLOW:
 4. Consent ya refusal capture karo — CLEARLY. Agar customer haan kahe to
    confirm karo ki link bhej rahe ho. Agar customer mana kare ya
    irritated ho, turn ONE more gentle offer max, phir turant respect karo.
-5. Call politely close karo, thank you bolo.
+5. Call politely close karo, thank you bolo.\
+"""
+
+# Fixed. Always appended, never editable via the settings page.
+GUARDRAILS = """\
 
 HARD RULES (inko kabhi mat todo):
 - Card number, CVV, OTP, UPI PIN — kabhi mat maango. Bilkul nahi. Sirf
@@ -44,7 +53,7 @@ HARD RULES (inko kabhi mat todo):
   aur call end karo. Uske baad koi persuasion nahi.
 - Jhooth mat bolo. Discount, offer, deadline — jo actually nahi hai wo
   mat banao.
-- Tum ek AI assistant ho. Agar koi seedha pooche to honestly batao.
+- Tum ek AI assistant ho. Agar koi seedha pooche to honestly batao.\
 """
 
 _FAILURE_DESC = {
@@ -89,11 +98,34 @@ def recovery_offer(event: FailureEvent) -> str:
     return _OFFER_OVERRIDE.get(event.error_code) or _OFFER[event.failure_type]
 
 
+def _fill(template: str, **fields: str) -> str:
+    """Replace {token} placeholders textually — a vendor-edited template
+    with a stray/unknown brace can't crash this (unlike str.format)."""
+    out = template
+    for k, v in fields.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+
+def active_template() -> str:
+    """The current persona/tone/call-flow template — a workspace override
+    if one has been saved, else DEFAULT_TEMPLATE."""
+    try:
+        from voice.agent_prompt import get_template
+
+        return get_template() or DEFAULT_TEMPLATE
+    except Exception:
+        # no DB / not configured -> fall back rather than break a call
+        return DEFAULT_TEMPLATE
+
+
 def build_system_prompt(event: FailureEvent, *, merchant: str = MERCHANT_PLACEHOLDER) -> str:
-    return BASE_PERSONA.format(
+    body = _fill(
+        active_template(),
         merchant=merchant,
         customer_name=event.customer.name,
         failure_desc=failure_description(event),
         amount=event.amount_inr,
         offer=recovery_offer(event),
     )
+    return body + "\n" + GUARDRAILS

@@ -248,6 +248,23 @@ def api_event(event_id: str) -> dict:
 _MAX_UPLOAD = 5 * 1024 * 1024  # 5 MB
 
 
+_SAMPLE_CSV = (
+    "name,phone,amount,failure_type,error_code,reference_id\n"
+    "Example Customer One,9800000001,2499,payment_retry,card_declined,ord_1001\n"
+    "Example Customer Two,9800000002,899,checkout_abandonment,checkout_closed,ord_1002\n"
+    "Example Customer Three,9800000003,1499,mandate_failure,mandate_insufficient_funds,sub_2001\n"
+)
+
+
+@app.get("/upload/sample.csv")
+def upload_sample_csv() -> StreamingResponse:
+    """A template sheet — not real data, just shows the expected columns."""
+    return StreamingResponse(
+        iter([_SAMPLE_CSV]), media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="razorcovery_sample_sheet.csv"'},
+    )
+
+
 @app.get("/upload", response_class=HTMLResponse)
 def upload_form() -> str:
     return templates.upload_page()
@@ -424,6 +441,46 @@ def batches_page() -> str:
     with db.get_conn() as conn:
         items = intake_store.list_batches(conn)
     return templates.batches_page(items)
+
+
+# ------------------------------------------------------------------ #
+#  Agent settings: the editable part of the voice agent's system prompt
+# ------------------------------------------------------------------ #
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(saved: str = "", error: str = "") -> str:
+    from voice import agent_prompt as prompt_store
+    from voice.prompt import DEFAULT_TEMPLATE, GUARDRAILS
+
+    meta = prompt_store.get_meta()
+    template = meta["template"] if meta else DEFAULT_TEMPLATE
+    return templates.settings_page(
+        template=template, guardrails=GUARDRAILS,
+        is_custom=meta is not None,
+        updated_at=str(meta["updated_at"]) if meta else "",
+        updated_by=(meta["updated_by"] or "") if meta else "",
+        saved=(saved == "1"), error=error,
+    )
+
+
+@app.post("/settings/prompt")
+def settings_save_prompt(request: Request, template: str = Form(...)) -> RedirectResponse:
+    from voice import agent_prompt as prompt_store
+
+    email = _ctx.current_email.get() or "unknown"
+    try:
+        prompt_store.set_template(template, updated_by=email)
+    except ValueError as exc:
+        return RedirectResponse(f"/settings?error={exc}", status_code=303)
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/settings/prompt/reset")
+def settings_reset_prompt() -> RedirectResponse:
+    from voice import agent_prompt as prompt_store
+
+    prompt_store.reset_to_default()
+    return RedirectResponse("/settings?saved=1", status_code=303)
 
 
 def _bucket(b) -> dict:

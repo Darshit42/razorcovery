@@ -3,13 +3,24 @@ import uuid
 import pytest
 
 from audit import db
+from tests.conftest import TEST_EMAIL_DOMAIN
 
 pytestmark = pytest.mark.skipif(not db.ping(), reason="Postgres not reachable")
 
 
 @pytest.fixture()
 def creds():
-    return f"u_{uuid.uuid4().hex[:10]}@example.com", "a-good-password-1"
+    return f"u_{uuid.uuid4().hex[:10]}@{TEST_EMAIL_DOMAIN}", "a-good-password-1"
+
+
+@pytest.fixture(autouse=True)
+def _cleanup(creds):
+    """Delete only the specific test account this test creates — never a
+    blanket wipe (that previously deleted real signed-up accounts)."""
+    yield
+    email, _ = creds
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM app_user WHERE email=%s", (email,))
 
 
 def test_signup_login_session_logout(creds):
