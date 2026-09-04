@@ -3,6 +3,11 @@
 *.pem
 global-bundle.pem
 
+# local-only project docs — kept on disk, never pushed (Sept 4: purged
+# from git history at the owner's request; do not re-track these)
+CLAUDE.md
+PRD.md
+
 # python
 __pycache__/
 *.py[cod]
