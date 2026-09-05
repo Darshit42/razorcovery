@@ -117,3 +117,14 @@ def test_end_call_without_other_tool_resolves_a_result():
     msg = run(a.end_call(None))
     assert msg == "__END_CALL__"
     assert a.outcome.result in ("declined", "link_sent_no_commit")
+
+
+def test_end_call_flags_the_call_as_ended():
+    # regression: end_call used to return a sentinel string nothing ever
+    # read, so a plain "declined" call (not recovered/refused/wrong_number)
+    # never tripped the entrypoint's wait loop and sat until the 4-minute
+    # max-call-duration timeout instead of hanging up right away.
+    a = RecoveryAgent(_ev(), attempt_number=1)
+    assert a.call_ended_by_agent is False
+    run(a.end_call(None))
+    assert a.call_ended_by_agent is True

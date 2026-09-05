@@ -88,6 +88,19 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
         voice=config.GEMINI_VOICE, language=config.GEMINI_LANGUAGE, temperature=0.6,
         input_audio_transcription=genai_types.AudioTranscriptionConfig(),
         output_audio_transcription=genai_types.AudioTranscriptionConfig(),
+        # Cut turn-taking latency: the default silence window before the
+        # model decides the customer is done talking is noticeably laggy
+        # on a live phone call. Shorter silence + higher-sensitivity
+        # start/end-of-speech detection makes Priya respond right after
+        # the customer stops, instead of a beat later.
+        realtime_input_config=genai_types.RealtimeInputConfig(
+            automatic_activity_detection=genai_types.AutomaticActivityDetection(
+                start_of_speech_sensitivity=genai_types.StartSensitivity.START_SENSITIVITY_HIGH,
+                end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_HIGH,
+                prefix_padding_ms=100,
+                silence_duration_ms=400,
+            ),
+        ),
     )
     session = AgentSession(llm=model)
 
@@ -168,7 +181,7 @@ async def _wait_for_end(session, agent: RecoveryAgent) -> None:
         done.set()
 
     while not done.is_set():
-        if agent.outcome.result in ("recovered", "refused", "wrong_number"):
+        if agent.call_ended_by_agent or agent.outcome.result in ("recovered", "refused", "wrong_number"):
             await asyncio.sleep(3)  # let the agent read its closing line
             return
         await asyncio.sleep(0.5)

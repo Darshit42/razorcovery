@@ -33,6 +33,10 @@ class RecoveryAgent(Agent):
         self._links = link_provider or default_provider()
         self.outcome = CallOutcome(result="no_answer", attempt_number=attempt_number)
         self._started = datetime.now(timezone.utc)
+        # set by end_call() -- the entrypoint's wait loop watches this to hang
+        # up right after the agent's closing line, instead of sitting until
+        # the call hits its max-duration timeout.
+        self.call_ended_by_agent = False
 
     # --- transcript capture ---------------------------------------------
     def record_turn(self, role: str, text: str) -> None:
@@ -96,4 +100,5 @@ class RecoveryAgent(Agent):
         if self.outcome.result == "no_answer":
             # spoke to someone but no other tool fired
             self.outcome.result = "link_sent_no_commit" if self.outcome.retry_link_url else "declined"
+        self.call_ended_by_agent = True
         return "__END_CALL__"
