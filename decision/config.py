@@ -1,13 +1,17 @@
 """Tunable knobs for the decision layer. All stopping-rule limits live
 here so they are code, not prose (CLAUDE.md hard rule)."""
 
+import os
+
 # PRD §7: max outbound *voice call* attempts per customer.
 MAX_ATTEMPTS = 2
 
 # PRD §7: no calls outside this local-time window [start, end).
 # 9am inclusive .. 7pm exclusive, evaluated in the customer's timezone.
-CALL_WINDOW_START_HOUR = 9
-CALL_WINDOW_END_HOUR = 19
+# Overridable via env for demos/testing outside normal hours
+# (CALL_WINDOW_START_HOUR / CALL_WINDOW_END_HOUR) -- leave unset in prod.
+CALL_WINDOW_START_HOUR = int(os.environ.get("CALL_WINDOW_START_HOUR", 9))
+CALL_WINDOW_END_HOUR = int(os.environ.get("CALL_WINDOW_END_HOUR", 19))
 
 # Amount thresholds (INR) for choosing intervention richness.
 # At/above VOICE -> a call is worth the cost; at/above SMS -> an SMS
