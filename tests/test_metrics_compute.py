@@ -173,3 +173,62 @@ def test_summarise_lifecycles_matches_summarise_on_subset():
     assert s.total_events == 2
     assert s.recovered == 2
     assert s.amount_recovered_inr == 15000
+
+
+# --- manual recovery-status override --------------------------------------
+
+def _manual_status_row(eid, status):
+    return row(eid, "manual_status", payload={"manual_status": status})
+
+
+def test_manual_status_paid_overrides_a_non_recovered_result():
+    rows = blocked_refusal("evt_c", 8000) + [_manual_status_row("evt_c", "paid")]
+    lc = compute.reconstruct(rows)["evt_c"]
+    assert lc.manual_status == "paid"
+    assert lc.recovered is True
+    assert lc.recovered_amount_inr == 8000
+
+
+def test_manual_status_failed_overrides_a_recovered_result():
+    rows = recovered_voice("evt_a", 10000) + [_manual_status_row("evt_a", "failed")]
+    lc = compute.reconstruct(rows)["evt_a"]
+    assert lc.manual_status == "failed"
+    assert lc.recovered is False
+    assert lc.recovered_amount_inr == 0
+
+
+def test_manual_status_disputed_overrides_a_recovered_result():
+    rows = recovered_voice("evt_a", 10000) + [_manual_status_row("evt_a", "disputed")]
+    lc = compute.reconstruct(rows)["evt_a"]
+    assert lc.recovered is False
+
+
+def test_manual_status_pending_and_partial_do_not_force_recovered():
+    for status in ("pending", "partial"):
+        rows = blocked_refusal("evt_c", 8000) + [_manual_status_row("evt_c", status)]
+        lc = compute.reconstruct(rows)["evt_c"]
+        assert lc.manual_status == status
+        assert lc.recovered is False
+
+
+def test_manual_status_unset_clears_override_back_to_automatic():
+    rows = (
+        recovered_voice("evt_a", 10000)
+        + [_manual_status_row("evt_a", "failed")]
+        + [_manual_status_row("evt_a", "unset")]
+    )
+    lc = compute.reconstruct(rows)["evt_a"]
+    assert lc.manual_status is None
+    assert lc.recovered is True
+    assert lc.recovered_amount_inr == 10000
+
+
+def test_manual_status_latest_row_wins():
+    rows = (
+        blocked_refusal("evt_c", 8000)
+        + [_manual_status_row("evt_c", "paid")]
+        + [_manual_status_row("evt_c", "failed")]
+    )
+    lc = compute.reconstruct(rows)["evt_c"]
+    assert lc.manual_status == "failed"
+    assert lc.recovered is False

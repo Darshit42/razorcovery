@@ -550,11 +550,41 @@ def detail_page(lc: EventLifecycle | None) -> str:
         + "</ol>"
     )
 
+    manual_badge = ""
+    if lc.manual_status:
+        tone = "recovered" if lc.manual_status == "paid" else (
+            "blocked" if lc.manual_status in ("failed", "disputed") else "open")
+        manual_badge = _badge(f"manual: {lc.manual_status}", tone)
+
     header = (
         "<div class='mb-8 flex items-center gap-3'>"
         f"<h1 class='text-2xl font-semibold text-slate-900'>{_e(lc.event_id)}</h1>"
-        f"{_status_badge(lc)}"
+        f"{_status_badge(lc)}{manual_badge}"
         f"{_badge(src, src) if lc.transcript else ''}</div>"
+    )
+
+    _STATUS_LABELS = {
+        "": "Automatic (from call result)", "pending": "Pending",
+        "paid": "Paid", "failed": "Failed", "disputed": "Disputed",
+        "partial": "Partially paid",
+    }
+    current = lc.manual_status or ""
+    options = "".join(
+        f"<option value='{v or 'unset'}'{' selected' if v == current else ''}>{_e(label)}</option>"
+        for v, label in _STATUS_LABELS.items()
+    )
+    status_panel = _panel(
+        "recovery-status", "Recovery status",
+        f"<form method='post' action='/event/{_e(lc.event_id)}/status' "
+        "class='flex flex-wrap items-end gap-3'>"
+        "<label class='block'><span class='text-sm font-medium text-slate-600'>Status</span>"
+        f"<select name='status' class='mt-1 rounded-lg border border-slate-200 bg-white "
+        f"px-3 py-2 text-sm'>{options}</select></label>"
+        "<button class='rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white "
+        "hover:bg-brand-700'>Update</button></form>",
+        "Confirm what actually happened (e.g. checked the bank statement) — this "
+        "overrides the automatic call result in every metric. Recorded as a new "
+        "audit event, never edits the call's own record.",
     )
 
     recording = ""
@@ -570,6 +600,7 @@ def detail_page(lc: EventLifecycle | None) -> str:
         header
         + "<div class='space-y-8'>"
         + _panel("facts", "Event", facts_grid)
+        + status_panel
         + _panel("stops", "Stopping rules", stop_inner)
         + recording
         + _panel("transcript", transcript_title, transcript_inner, transcript_cap)

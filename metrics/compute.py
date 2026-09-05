@@ -11,6 +11,10 @@ from metrics import cost
 
 RECOVERED_RESULTS = {"recovered"}
 
+# Manual recovery-status override (set from the event drill-down page).
+# "unset" clears the override and reverts to the automatic call result.
+MANUAL_STATUSES = ("pending", "paid", "failed", "disputed", "partial")
+
 
 # --------------------------------------------------------------------------
 # Lifecycle reconstruction
@@ -27,7 +31,6 @@ class EventLifecycle:
     attempts: int = 0                       # count of 'action' rows
     call_seconds: float = 0.0
     result: str | None = None               # from the last 'outcome' row
-    recovered_amount_inr: int = 0
     retry_link_url: str | None = None
     recording_url: str | None = None
     customer_name: str | None = None
@@ -38,6 +41,7 @@ class EventLifecycle:
     completion_tokens: int = 0
     first_ts: Any = None          # datetime of the event_ingested row
     batch_id: str | None = None
+    manual_status: str | None = None        # latest 'manual_status' row, if any
     timeline: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -46,7 +50,17 @@ class EventLifecycle:
 
     @property
     def recovered(self) -> bool:
+        """A manual 'paid' confirmation always wins — someone checked the
+        bank statement — even if the call itself didn't end cleanly."""
+        if self.manual_status == "paid":
+            return True
+        if self.manual_status in ("failed", "disputed"):
+            return False
         return self.result in RECOVERED_RESULTS
+
+    @property
+    def recovered_amount_inr(self) -> int:
+        return self.amount_inr or 0 if self.recovered else 0
 
     @property
     def blocked(self) -> bool:
@@ -105,8 +119,9 @@ def reconstruct(rows: list[dict[str, Any]]) -> dict[str, EventLifecycle]:
             lc.transcript_source = payload.get("transcript_source", lc.transcript_source)
             lc.prompt_tokens += int(payload.get("prompt_tokens") or 0)
             lc.completion_tokens += int(payload.get("completion_tokens") or 0)
-            if payload.get("result") in RECOVERED_RESULTS and lc.amount_inr:
-                lc.recovered_amount_inr = lc.amount_inr
+        elif et == "manual_status":
+            status = payload.get("manual_status")
+            lc.manual_status = None if status == "unset" else status
     return out
 
 

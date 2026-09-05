@@ -91,3 +91,24 @@ def test_event_detail_and_404(client):
         assert r.status_code == 200
         assert "audit timeline" in r.text.lower()
     assert client.get("/api/event/does-not-exist").status_code == 404
+
+
+def test_set_manual_status_rejects_invalid_value(client, one_event):
+    # invalid-status check runs before the event lookup, so this 400s even
+    # for a pytest-artifact event id.
+    r = client.post(f"/event/{one_event}/status", data={"status": "nonsense"})
+    assert r.status_code == 400
+
+
+def test_set_manual_status_unknown_event_404s(client):
+    r = client.post("/event/does-not-exist/status", data={"status": "paid"})
+    assert r.status_code == 404
+
+
+def test_set_manual_status_404s_for_hidden_test_artifact(client, one_event):
+    # `one_event` is a pytest_evt_-prefixed row, which `_is_test_artifact`
+    # hides from `_rows()` everywhere in the UI (same as /event/{id} itself
+    # 404ing for it) -- this is the existing display-filter behaviour, not
+    # a status-route bug.
+    r = client.post(f"/event/{one_event}/status", data={"status": "paid"})
+    assert r.status_code == 404

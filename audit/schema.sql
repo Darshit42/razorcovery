@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
             'decision',
             'action',
             'outcome',
-            'stopping_rule_triggered'
+            'stopping_rule_triggered',
+            'manual_status'
         )),
     failure_type    TEXT
         CHECK (failure_type IS NULL OR failure_type IN (
@@ -34,6 +35,29 @@ CREATE TABLE IF NOT EXISTS audit_log (
         OR (reason IS NOT NULL AND length(trim(reason)) > 0)
     )
 );
+
+-- Migration: widen entry_type to include 'manual_status' on a table that
+-- already existed before this value was added (CREATE TABLE IF NOT EXISTS
+-- above is a no-op once the table exists, so the original anonymous CHECK
+-- constraint would otherwise stick around and reject the new value).
+DO $$
+DECLARE
+    cname text;
+BEGIN
+    SELECT con.conname INTO cname
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    WHERE rel.relname = 'audit_log' AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) LIKE '%entry_type%';
+    IF cname IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE audit_log DROP CONSTRAINT %I', cname);
+    END IF;
+    ALTER TABLE audit_log ADD CONSTRAINT audit_log_entry_type_check
+        CHECK (entry_type IN (
+            'event_ingested', 'decision', 'action', 'outcome',
+            'stopping_rule_triggered', 'manual_status'
+        ));
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_event_id    ON audit_log (event_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_customer_id ON audit_log (customer_id);

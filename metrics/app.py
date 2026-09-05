@@ -22,7 +22,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request,
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from audit import db
-from audit.log import query
+from audit.log import append_event, query
 from auth import service as auth_service
 from intake import parse as intake_parse
 from intake import store as intake_store
@@ -108,6 +108,17 @@ _ROW_COLS = ["id", "ts", "event_id", "customer_id", "entry_type", "failure_type"
              "intervention", "reason", "amount_inr", "attempt_number", "payload"]
 
 
+_TEST_EVENT_PREFIXES = ("pytest_", "smoketest_")
+
+
+def _is_test_artifact(event_id: str) -> bool:
+    """pytest's own fixtures (and one-off manual smoke checks) write
+    directly-into-the-shared-DB rows with these prefixes (see
+    tests/conftest.py) — hide them from the web UI. Nothing is deleted;
+    this is a display filter only."""
+    return event_id.startswith(_TEST_EVENT_PREFIXES)
+
+
 def _rows(batch: str | None = None):
     with db.get_conn() as conn:
         if batch:
@@ -116,8 +127,10 @@ def _rows(batch: str | None = None):
                 "WHERE payload->>'batch_id' = %s ORDER BY id",
                 (batch,),
             ).fetchall()
-            return [dict(zip(_ROW_COLS, r)) for r in raw]
-        return query(conn)
+            rows = [dict(zip(_ROW_COLS, r)) for r in raw]
+        else:
+            rows = query(conn)
+    return [r for r in rows if not _is_test_artifact(r["event_id"])]
 
 
 def _parse_date(s: str | None) -> date | None:
@@ -196,6 +209,31 @@ def index(f: Filters = Depends(_filters)) -> str:
 def event_detail(event_id: str) -> str:
     lifecycles = compute.reconstruct(_rows())
     return templates.detail_page(lifecycles.get(event_id))
+
+
+@app.post("/event/{event_id}/status")
+def set_manual_status(event_id: str, status: str = Form(...)) -> RedirectResponse:
+    """Update the manual recovery status for an event."""
+    if status != "unset" and status not in compute.MANUAL_STATUSES:
+        raise HTTPException(400, "invalid status")
+    lifecycles = compute.reconstruct(_rows())
+    lc = lifecycles.get(event_id)
+    if lc is None:
+        raise HTTPException(404, "unknown event")
+
+    email = _ctx.current_email.get() or "unknown"
+    label = "cleared (back to automatic)" if status == "unset" else f"set to '{status}'"
+    with db.get_conn() as conn:
+        append_event(
+            conn,
+            event_id=event_id,
+            customer_id=lc.customer_id or "unknown",
+            entry_type="manual_status",
+            failure_type=lc.failure_type,
+            reason=f"Recovery status manually {label} by {email}.",
+            payload={"manual_status": status, "updated_by": email},
+        )
+    return RedirectResponse(f"/event/{event_id}", status_code=303)
 
 
 @app.get("/calls", response_class=HTMLResponse)

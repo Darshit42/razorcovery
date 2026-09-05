@@ -17,6 +17,7 @@ ENTRY_TYPES = {
     "action",
     "outcome",
     "stopping_rule_triggered",
+    "manual_status",
 }
 _REASON_REQUIRED = {"decision", "stopping_rule_triggered"}
 
