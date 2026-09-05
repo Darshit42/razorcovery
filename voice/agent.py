@@ -125,6 +125,17 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
         if getattr(ev, "is_final", True) and getattr(ev, "transcript", ""):
             agent.record_turn("user", ev.transcript)
 
+    # real token usage for cost tracking (metrics/cost.py). Was previously
+    # never captured -- every call logged 0 tokens and so cost ₹0 no
+    # matter how long it ran. session_usage_updated fires with a running
+    # cumulative total each time it changes; the last one we see before
+    # the call ends is the final tally.
+    usage_holder: list = []
+
+    @session.on("session_usage_updated")
+    def _on_usage(ev) -> None:
+        usage_holder[:] = [ev.usage]
+
     # --- ring the customer in -----------------------------------------
     trunk_id = os.environ.get("SIP_OUTBOUND_TRUNK_ID")
     if should_dial and trunk_id:
@@ -168,7 +179,17 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
             await stop_recording(egress_id)
         except Exception:
             pass
+        _apply_usage(agent, usage_holder)
         _finalise(event, agent, started_at, egress_id)
+
+
+def _apply_usage(agent: RecoveryAgent, usage_holder: list) -> None:
+    if not usage_holder:
+        return
+    for u in usage_holder[0].model_usage:
+        if getattr(u, "type", None) == "llm_usage":
+            agent.outcome.prompt_tokens += u.input_tokens
+            agent.outcome.completion_tokens += u.output_tokens
 
 
 async def _wait_for_end(session, agent: RecoveryAgent) -> None:
