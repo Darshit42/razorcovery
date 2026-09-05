@@ -514,7 +514,7 @@ def detail_page(lc: EventLifecycle | None) -> str:
         turns = []
         for t in lc.transcript:
             is_agent = t["role"] in ("assistant", "agent")
-            who = "Priya" if is_agent else "Customer"
+            who = "Priya" if is_agent else ("Customer" if t["role"] == "user" else "System")
             avatar_bg = "bg-brand-600 text-white" if is_agent else "bg-slate-200 text-slate-600"
             bubble = "bg-brand-50 text-slate-800" if is_agent else "bg-slate-100 text-slate-700"
             row_dir = "flex-row-reverse" if is_agent else ""
@@ -967,7 +967,7 @@ def signup_page(*, error: str = "") -> str:
 
 def settings_page(*, template: str, guardrails: str, is_custom: bool,
                   updated_at: str, updated_by: str, saved: bool = False,
-                  error: str = "") -> str:
+                  error: str = "", versions: list[dict] | None = None) -> str:
     banner = ""
     if saved:
         banner = (
@@ -1020,6 +1020,37 @@ def settings_page(*, template: str, guardrails: str, is_custom: bool,
         "(<code class='rounded bg-slate-100 px-1'>voice/flow.py</code>), not by prompt text alone.</p>"
     )
 
+    kind_labels = {"base": "First version", "edit": "Edit", "reset": "Reset to default",
+                   "rollback": "Rollback"}
+    version_rows = ""
+    for v in (versions or []):
+        stamp = str(v["created_at"])[:16].replace("T", " ") if v["created_at"] else ""
+        diff_bits = []
+        if v["lines_added"]:
+            diff_bits.append(f"<span class='text-emerald-600'>+{v['lines_added']}</span>")
+        if v["lines_removed"]:
+            diff_bits.append(f"<span class='text-rose-600'>-{v['lines_removed']}</span>")
+        diff_txt = " ".join(diff_bits) or "<span class='text-slate-400'>no change</span>"
+        label = kind_labels.get(v["kind"], v["kind"])
+        note = f" — {_e(v['note'])}" if v.get("note") else ""
+        version_rows += (
+            "<li class='flex flex-wrap items-center justify-between gap-3 py-3 "
+            "border-b border-slate-100 last:border-0'>"
+            "<div class='text-sm'>"
+            f"<span class='font-medium text-slate-700'>{_e(label)}</span>{note} "
+            f"<span class='text-slate-400'>· {diff_txt} · v{v['id']}</span><br>"
+            f"<span class='text-xs text-slate-400'>{_e(stamp)}"
+            f"{' · ' + _e(v['updated_by']) if v.get('updated_by') else ''}</span>"
+            "</div>"
+            f"<form method='post' action='/settings/prompt/rollback/{v['id']}'>"
+            "<button class='text-sm text-brand-700 hover:text-brand-900 underline'>"
+            "Restore this version</button></form></li>"
+        )
+    history = (
+        "<ul class='divide-y-0'>" + version_rows + "</ul>" if version_rows else
+        "<p class='text-sm text-slate-400'>No edits yet — versions appear here once you save a change.</p>"
+    )
+
     body = (
         "<div class='mb-8'><h1 class='text-2xl font-semibold text-slate-900'>Agent prompt</h1>"
         "<p class='mt-1 text-sm text-slate-500'>What Priya says and how she carries the call. "
@@ -1029,6 +1060,9 @@ def settings_page(*, template: str, guardrails: str, is_custom: bool,
         + _panel("editor", "Editable", editor)
         + _panel("guardrails", "Fixed guardrails", fixed,
                  "compliance text that can't be edited away")
+        + _panel("history", "Version history", history,
+                 "every save/reset/rollback is kept — only the line-level change is stored, "
+                 "not a full copy, so this stays cheap however often you edit")
         + "</div>"
     )
     return _shell("razorcovery — agent prompt", "/settings", body)

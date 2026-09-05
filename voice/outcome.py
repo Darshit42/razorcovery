@@ -34,6 +34,7 @@ class CallOutcome:
     consent_captured: bool = False
     refusal_captured: bool = False
     transcript: list[dict[str, str]] = field(default_factory=list)
+    decline_note: str | None = None
     error: str | None = None
     recording_url: str | None = None
     # real LLM token usage for this call (from LiveKit's UsageCollector)
@@ -68,13 +69,16 @@ def write_call_audit(sink, event: FailureEvent, outcome: CallOutcome) -> None:
                      "blocks_all_contact": True},
         )
 
+    reason = f"call ended: {outcome.result}"
+    if outcome.decline_note:
+        reason += f" — {outcome.decline_note}"
     sink(
         event_id=event.event_id,
         customer_id=event.customer.id,
         entry_type="outcome",
         failure_type=event.failure_type,
         intervention="voice",
-        reason=f"call ended: {outcome.result}",
+        reason=reason,
         amount_inr=event.amount_inr,
         attempt_number=outcome.attempt_number,
         payload={
@@ -86,6 +90,7 @@ def write_call_audit(sink, event: FailureEvent, outcome: CallOutcome) -> None:
             "recording_url": outcome.recording_url,
             "error": outcome.error,
             "transcript": outcome.transcript,
+            "decline_note": outcome.decline_note,
             "prompt_tokens": outcome.prompt_tokens,
             "completion_tokens": outcome.completion_tokens,
             "ended_at": datetime.now(timezone.utc).isoformat(),

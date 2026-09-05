@@ -498,6 +498,7 @@ def settings_page(saved: str = "", error: str = "") -> str:
         updated_at=str(meta["updated_at"]) if meta else "",
         updated_by=(meta["updated_by"] or "") if meta else "",
         saved=(saved == "1"), error=error,
+        versions=prompt_store.list_versions(),
     )
 
 
@@ -517,7 +518,20 @@ def settings_save_prompt(request: Request, template: str = Form(...)) -> Redirec
 def settings_reset_prompt() -> RedirectResponse:
     from voice import agent_prompt as prompt_store
 
-    prompt_store.reset_to_default()
+    email = _ctx.current_email.get() or "unknown"
+    prompt_store.reset_to_default(updated_by=email)
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/settings/prompt/rollback/{version_id}")
+def settings_rollback_prompt(version_id: int) -> RedirectResponse:
+    from voice import agent_prompt as prompt_store
+
+    email = _ctx.current_email.get() or "unknown"
+    try:
+        prompt_store.rollback_to(version_id, updated_by=email)
+    except ValueError as exc:
+        return RedirectResponse(f"/settings?error={exc}", status_code=303)
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 

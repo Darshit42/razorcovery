@@ -93,6 +93,25 @@ def test_recovered_amount_only_counts_full_recovery():
     assert recovered_amount(ev, CallOutcome(result="link_sent_no_commit", attempt_number=1)) == 0
 
 
+def test_offer_declined_stores_note_without_faking_a_transcript_turn():
+    a = RecoveryAgent(_ev(), attempt_number=1)
+    run(a.offer_declined(None, note="Customer will retry by tomorrow evening"))
+    assert a.outcome.result == "declined"
+    assert a.outcome.decline_note == "Customer will retry by tomorrow evening"
+    assert a.outcome.transcript == []  # not injected as a fake chat turn
+
+
+def test_write_call_audit_includes_decline_note_in_reason_and_payload():
+    sink = ListSink()
+    ev = _ev()
+    a = RecoveryAgent(ev, attempt_number=1)
+    run(a.offer_declined(None, note="will retry tomorrow"))
+    write_call_audit(sink, ev, a.outcome)
+    outcome_row = sink.rows[-1]
+    assert "will retry tomorrow" in outcome_row["reason"]
+    assert outcome_row["payload"]["decline_note"] == "will retry tomorrow"
+
+
 def test_end_call_without_other_tool_resolves_a_result():
     a = RecoveryAgent(_ev(), attempt_number=1)
     msg = run(a.end_call(None))

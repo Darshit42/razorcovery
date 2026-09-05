@@ -65,7 +65,7 @@ class RecoveryAgent(Agent):
         self.outcome.result = "declined"
         self.outcome.duration_s = self._elapsed()
         if note:
-            self.record_turn("system", f"declined: {note}")
+            self.outcome.decline_note = note.strip()
         return "Theek hai, politely samjho aur call wrap up karo."
 
     @function_tool

@@ -91,11 +91,17 @@ async def entrypoint(ctx) -> None:  # ctx: livekit.agents.JobContext
     )
     session = AgentSession(llm=model)
 
-    # transcript: both sides
+    # transcript: both sides. The agent's own turns come through
+    # conversation_item_added; the customer's come through
+    # user_input_transcribed. Both fire for the user's side of the
+    # conversation, so conversation_item_added skips role="user" here --
+    # recording both was writing every customer line twice.
     @session.on("conversation_item_added")
     def _on_item(ev) -> None:
         item = getattr(ev, "item", ev)
         role = getattr(item, "role", "unknown")
+        if role == "user":
+            return
         text = getattr(item, "text_content", None) or getattr(item, "content", "")
         if isinstance(text, list):
             text = " ".join(str(x) for x in text)
